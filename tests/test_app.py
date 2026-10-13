@@ -9,6 +9,7 @@ import pytest
 
 from app import main
 from app.db import Database
+from app.config import oauth_base_url
 from app.integrations import (DownloadProvider, IntegrationError, YouTubeUploader,
                               normalize_channel_id, oauth_authorization_url, _configure_oauth_redirect_transport)
 from app.security import SecretBox, decrypt_secret, encrypt_secret, new_csrf_token, valid_csrf, redact_sensitive
@@ -114,6 +115,12 @@ def test_media_streaming_enforces_maximum_size(tmp_path):
         provider._stream_response(response, tmp_path / "large.part", tmp_path / "large")
 
 
+def test_ip_based_oauth_callback_uses_localhost():
+    assert oauth_base_url("http://168.107.75.253:8000") == "http://localhost:8000"
+    assert oauth_base_url("http://127.0.0.1:8000") == "http://localhost:8000"
+    assert oauth_base_url("https://uploader.example") == "https://uploader.example"
+
+
 def test_oauth_transport_accepts_http_on_any_host_and_https(monkeypatch):
     monkeypatch.delenv("OAUTHLIB_INSECURE_TRANSPORT", raising=False)
     _configure_oauth_redirect_transport("http://uploader.example/oauth/callback")
@@ -179,7 +186,7 @@ def test_source_baseline_does_not_enqueue_existing_videos(monkeypatch, tmp_path)
 
 
 def test_worker_reuses_persisted_media_instead_of_redownloading(monkeypatch, tmp_path):
-    from app.config import settings
+    from app.config import settings, oauth_base_url
     media_root = Path(settings.downloads_path).resolve()
     media_root.mkdir(parents=True, exist_ok=True)
     media = media_root / f"persisted-{time.time_ns()}.mp4"

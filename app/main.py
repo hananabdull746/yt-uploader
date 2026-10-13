@@ -187,7 +187,7 @@ def render_page(request: Request, page: str, message: str | None = None, error: 
         "db_path": str(settings.database_path), "configured_download_key": public_setting("download_api_key"),
         "configured_google_id": public_setting("google_client_id"), "configured_google_secret": public_setting("google_client_secret"),
         "oauth_connected": bool(DB.one("SELECT id FROM oauth_tokens WHERE id=1")),
-        "oauth_redirect_uri": settings.base_url + "/oauth/callback",
+        "oauth_redirect_uri": settings.oauth_redirect_uri,
         "privacy_status": setting_value("privacy_status", "private"),
         "category_id": setting_value("category_id", "22"),
         "description_prefix": setting_value("description_prefix", ""),
@@ -403,7 +403,7 @@ def oauth_start(request: Request, csrf: str = Form(...), username: str = Depends
     client_secret = stored_setting("google_client_secret")
     if not client_id or not client_secret:
         return RedirectResponse("/settings?error=Save%20your%20Google%20OAuth%20client%20ID%20and%20secret%20first", status_code=303)
-    redirect_uri = settings.base_url + "/oauth/callback"
+    redirect_uri = settings.oauth_redirect_uri
     state = secrets.token_urlsafe(32)
     request.session["oauth_state"] = state
     try:
@@ -422,7 +422,7 @@ def oauth_callback(request: Request, code: str | None = None, state: str | None 
         raise HTTPException(400, "OAuth state check failed. Start the connection flow again.")
     try:
         credentials_json = oauth_exchange(stored_setting("google_client_id") or "", stored_setting("google_client_secret") or "",
-                                          settings.base_url + "/oauth/callback", state, str(request.url))
+                                          settings.oauth_redirect_uri, state, str(request.url))
         encrypted = encrypt_secret(credentials_json)
         now = int(time.time())
         DB.execute("INSERT INTO oauth_tokens(id,credentials_enc,connected_at,updated_at) VALUES(1,?,?,?) ON CONFLICT(id) DO UPDATE SET credentials_enc=excluded.credentials_enc,updated_at=excluded.updated_at",
