@@ -1,27 +1,13 @@
 from __future__ import annotations
 
-import ipaddress
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from urllib.parse import urlsplit, urlunsplit
 
 from dotenv import load_dotenv
 
 load_dotenv()
 
-
-def oauth_base_url(base_url: str) -> str:
-    """Use localhost for IP-based OAuth callback hosts (e.g. SSH-tunnel setups)."""
-    value = base_url.rstrip("/")
-    parsed = urlsplit(value)
-    try:
-        ipaddress.ip_address(parsed.hostname or "")
-    except ValueError:
-        return value
-    port = parsed.port
-    netloc = f"localhost:{port}" if port else "localhost"
-    return urlunsplit((parsed.scheme, netloc, parsed.path.rstrip("/"), "", ""))
 
 
 @dataclass(frozen=True)
@@ -45,7 +31,8 @@ class Settings:
 
     @property
     def oauth_redirect_uri(self) -> str:
-        return oauth_base_url(self.base_url) + "/oauth/callback"
+        # OAuth always returns through the local SSH tunnel, never through an IP or public host.
+        return f"http://localhost:{self.app_port}/oauth/callback"
 
     @property
     def data_dir(self) -> Path:

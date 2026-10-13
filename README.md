@@ -75,8 +75,8 @@ Run the app with `python -m app.run`. It binds to `127.0.0.1:8000` by default. R
 
 1. In Google Cloud Console, create or select a project and enable **YouTube Data API v3**.
 2. Configure the OAuth consent screen and create an OAuth client of type **Web application**.
-3. Set the authorized redirect URI to the URI shown in the dashboard. The default is `http://localhost:8000/oauth/callback`; if `BASE_URL` contains an IP address, the OAuth callback host is normalized to `localhost` (preserving its port). HTTP callbacks on any hostname are accepted by configuration, though plain HTTP is unsafe on untrusted networks.
-4. For a remote domain, update `BASE_URL` in `/etc/yt-uploader/yt-uploader.env` and register the exact redirect URI in Google Cloud. HTTPS/TLS and `COOKIE_SECURE=true` are strongly recommended for remote deployments. Plain HTTP is allowed but exposes OAuth authorization responses to network interception.
+3. Set the authorized redirect URI to the URI shown in the dashboard. OAuth always uses `http://localhost:<APP_PORT>/oauth/callback` through the SSH tunnel and is independent of `BASE_URL`; register this exact URI in Google Cloud.
+4. `BASE_URL` may be configured for other app URLs, but does not change the OAuth callback. The app accepts HTTP callbacks as requested; plain HTTP can expose OAuth authorization responses to network interception.
 5. In the dashboard, open **Connections & settings**, save the OAuth client ID and secret, and choose **Connect Google account**.
 
 Google may require OAuth app verification or may restrict uploads for unverified projects. Review current Google/YouTube policy, OAuth verification, API quota, and channel eligibility in the relevant consoles before unattended or public publishing. The service does not promise that every API upload will become publicly available.
