@@ -42,7 +42,7 @@ The dashboard binds to `127.0.0.1:8000`; it is not exposed to the public network
 ssh -L 8000:127.0.0.1:8000 <linux-user>@<server-ip>
 ```
 
-Then visit <http://127.0.0.1:8000> in your browser. The service automatically starts on reboot. Useful service commands:
+Then visit <http://localhost:8000> in your browser. The service automatically starts on reboot. Useful service commands:
 
 ```bash
 sudo systemctl status yt-uploader
@@ -75,7 +75,7 @@ Run the app with `python -m app.run`. It binds to `127.0.0.1:8000` by default. R
 
 1. In Google Cloud Console, create or select a project and enable **YouTube Data API v3**.
 2. Configure the OAuth consent screen and create an OAuth client of type **Web application**.
-3. Set the authorized redirect URI to `http://127.0.0.1:8000/oauth/callback` for SSH-tunnel-only local use, or to `https://your-domain.example/oauth/callback` when using a secured HTTPS reverse proxy.
+3. Set the authorized redirect URI to `http://localhost:8000/oauth/callback` for SSH-tunnel-only local use, or to `https://your-domain.example/oauth/callback` when using a secured HTTPS reverse proxy.
 4. For a remote domain, update `BASE_URL` in `/etc/yt-uploader/yt-uploader.env`, configure the same exact redirect URI in Google Cloud, enable `COOKIE_SECURE=true`, configure TLS at the reverse proxy, and restart the service.
 5. In the dashboard, open **Connections & settings**, save the OAuth client ID and secret, and choose **Connect Google account**.
 

@@ -21,7 +21,7 @@ class Settings:
     admin_password: str = os.getenv("ADMIN_PASSWORD", "")
     session_secret: str = os.getenv("SESSION_SECRET", "")
     encryption_key: str = os.getenv("ENCRYPTION_KEY", "")
-    base_url: str = os.getenv("BASE_URL", "http://127.0.0.1:8000").rstrip("/")
+    base_url: str = os.getenv("BASE_URL", "http://localhost:8000").rstrip("/")
     cookie_secure: bool = os.getenv("COOKIE_SECURE", "false").lower() == "true"
     poll_interval: int = max(60, int(os.getenv("POLL_INTERVAL_SECONDS", "300")))
     max_download_bytes: int = max(1, int(os.getenv("MAX_DOWNLOAD_BYTES", str(4 * 1024**3))))

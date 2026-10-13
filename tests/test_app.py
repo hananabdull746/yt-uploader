@@ -116,7 +116,7 @@ def test_media_streaming_enforces_maximum_size(tmp_path):
 
 def test_oauth_http_transport_is_limited_to_loopback(monkeypatch):
     monkeypatch.delenv("OAUTHLIB_INSECURE_TRANSPORT", raising=False)
-    _configure_oauth_redirect_transport("http://127.0.0.1:8000/oauth/callback")
+    _configure_oauth_redirect_transport("http://localhost:8000/oauth/callback")
     assert __import__("os").environ["OAUTHLIB_INSECURE_TRANSPORT"] == "1"
     monkeypatch.delenv("OAUTHLIB_INSECURE_TRANSPORT", raising=False)
     _configure_oauth_redirect_transport("https://uploader.example/oauth/callback")

@@ -55,7 +55,7 @@ if [[ ! -f "$ENV_FILE" ]]; then
   cat > "$ENV_FILE" <<EOF
 APP_HOST=127.0.0.1
 APP_PORT=8000
-BASE_URL=http://127.0.0.1:8000
+BASE_URL=http://localhost:8000
 COOKIE_SECURE=false
 ADMIN_USERNAME=admin
 ADMIN_PASSWORD=$GENERATED_PASSWORD
@@ -71,6 +71,10 @@ WORKER_ENABLED_ON_START=false
 EOF
   chmod 0640 "$ENV_FILE"
   chown root:"$APP_GROUP" "$ENV_FILE"
+fi
+# Migrate the previous default callback host while preserving custom HTTPS/domain URLs.
+if grep -qx 'BASE_URL=http://127.0.0.1:8000' "$ENV_FILE"; then
+  sed -i 's|^BASE_URL=http://127\.0\.0\.1:8000$|BASE_URL=http://localhost:8000|' "$ENV_FILE"
 fi
 
 install -m 0644 "$INSTALL_DIR/deploy/yt-uploader.service" "$SERVICE_FILE"
