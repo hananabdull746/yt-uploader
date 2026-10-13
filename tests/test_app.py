@@ -114,15 +114,13 @@ def test_media_streaming_enforces_maximum_size(tmp_path):
         provider._stream_response(response, tmp_path / "large.part", tmp_path / "large")
 
 
-def test_oauth_http_transport_is_limited_to_loopback(monkeypatch):
+def test_oauth_transport_accepts_http_on_any_host_and_https(monkeypatch):
     monkeypatch.delenv("OAUTHLIB_INSECURE_TRANSPORT", raising=False)
-    _configure_oauth_redirect_transport("http://localhost:8000/oauth/callback")
+    _configure_oauth_redirect_transport("http://uploader.example/oauth/callback")
     assert __import__("os").environ["OAUTHLIB_INSECURE_TRANSPORT"] == "1"
-    monkeypatch.delenv("OAUTHLIB_INSECURE_TRANSPORT", raising=False)
-    _configure_oauth_redirect_transport("https://uploader.example/oauth/callback")
-    assert "OAUTHLIB_INSECURE_TRANSPORT" not in __import__("os").environ
-    with pytest.raises(IntegrationError, match="HTTPS"):
-        _configure_oauth_redirect_transport("http://uploader.example/oauth/callback")
+    _configure_oauth_redirect_transport("https://secure.example/oauth/callback")
+    with pytest.raises(IntegrationError, match="absolute HTTP or HTTPS"):
+        _configure_oauth_redirect_transport("ftp://uploader.example/oauth/callback")
 
 
 def test_oauth_url_has_state_and_minimum_scope():

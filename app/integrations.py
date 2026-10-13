@@ -196,15 +196,15 @@ class DownloadProvider:
 
 
 def _configure_oauth_redirect_transport(redirect_uri: str) -> None:
-    """Allow OAuthlib HTTP only for a loopback callback carried by the SSH tunnel."""
+    """Allow OAuthlib callbacks over HTTP or HTTPS, on any host."""
     parsed = urlparse(redirect_uri)
-    if parsed.scheme == "https":
+    if parsed.scheme == "https" and parsed.hostname:
         return
-    if parsed.scheme == "http" and parsed.hostname in {"127.0.0.1", "localhost", "::1"}:
-        # Google authorization/token endpoints remain HTTPS; only the callback URI is loopback.
+    if parsed.scheme == "http" and parsed.hostname:
+        # Operator explicitly accepts plaintext callback transport; use HTTPS for public deployments.
         os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
         return
-    raise IntegrationError("OAuth redirect URI must use HTTPS; HTTP is allowed only for localhost/loopback SSH-tunnel access")
+    raise IntegrationError("OAuth redirect URI must be an absolute HTTP or HTTPS URL")
 
 
 def oauth_authorization_url(client_id: str, client_secret: str, redirect_uri: str, state: str) -> str:
