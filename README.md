@@ -13,7 +13,6 @@ A self-hosted, single-administrator dashboard and background worker for monitori
 - Manual video approval enabled by default, and private visibility selected by default.
 - Provider adapter for the API contract at [`video-download-api.com/api/docs`](https://video-download-api.com/api/docs): create a job with `/ajax/download.php`, poll `/ajax/progress.php`, and stream the completed file to disk. Download files are size-limited and the returned URL is restricted to HTTPS on `p.savenow.to`.
 - Google OAuth using only `youtube.upload`, encrypted credential storage, token refresh, and chunked resumable uploads with persisted session URLs.
-- Admin-only import/export for compatible Google `token.pickle` credentials plus a standard-library Python client to fetch the file locally through an SSH tunnel.
 - Recovery safeguards: completed media downloads are reused across retries; interrupted/uncertain uploads are held for manual reconciliation, with an option to resume the saved YouTube session rather than start a duplicate upload.
 - A one-command Ubuntu installer and systemd service running under an unprivileged account.
 
@@ -77,9 +76,8 @@ Run the app with `python -m app.run`. It binds to `127.0.0.1:8000` by default. R
 1. In Google Cloud Console, create or select a project and enable **YouTube Data API v3**.
 2. Configure the OAuth consent screen and create an OAuth client of type **Web application**.
 3. Set the authorized redirect URI to the URI shown in the dashboard. OAuth always uses `http://localhost:<APP_PORT>/oauth/callback` through the SSH tunnel and is independent of `BASE_URL`; register this exact URI in Google Cloud.
-4. `BASE_URL` may be configured for other app URLs, but does not change the OAuth callback. The app accepts HTTP callbacks as requested; plain HTTP can expose OAuth authorization responses to network interception.
-5. In the dashboard, open **Connections & settings**, save the OAuth client ID and secret, and choose **Connect Google account**. Alternatively, import a compatible Google-auth `token.pickle` file there. The importer uses a restricted unpickler and accepts only allowlisted Google credential classes and the `youtube.upload` scope; unsupported/legacy OAuth2Client pickle formats are rejected.
-6. To export credentials to your computer, keep the SSH tunnel open and run `python fetch_token_pickle.py` from the cloned repository. It prompts for admin credentials, downloads `token.pickle` to the current directory, and sets restrictive file permissions where supported. No third-party Python package is needed for the client script.
+4. `BASE_URL` may be configured for other app URLs, but does not change the OAuth callback. OAuthlib transport validation is disabled for this app as requested; external OAuth providers may still enforce their own redirect URI rules.
+5. In the dashboard, open **Connections & settings**, save the OAuth client ID and secret, and choose **Connect Google account**.
 
 Google may require OAuth app verification or may restrict uploads for unverified projects. Review current Google/YouTube policy, OAuth verification, API quota, and channel eligibility in the relevant consoles before unattended or public publishing. The service does not promise that every API upload will become publicly available.
 
@@ -107,7 +105,7 @@ The API client follows the provider's currently published contract and only acce
 
 ## Backups and secrets
 
-Back up the SQLite database and the environment file. The database contains encrypted provider/OAuth secrets, while `ENCRYPTION_KEY` is required to decrypt them. Exported `token.pickle` files are portable refresh-token credentials and must be protected, never committed, and deleted when no longer needed. Keep that key separately protected from database backups. Losing or changing it without first re-encrypting stored data makes those secrets unavailable. Restrict access to backups; the OAuth refresh token is sensitive.
+Back up the SQLite database and the environment file. The database contains encrypted provider/OAuth secrets, while `ENCRYPTION_KEY` is required to decrypt them. Keep that key separately protected from database backups. Losing or changing it without first re-encrypting stored data makes those secrets unavailable. Restrict access to backups; the OAuth refresh token is sensitive.
 
 To back up the database consistently, stop the service or use SQLite's online backup API. Do not commit `.env`, the database, media downloads, logs, or OAuth token data.
 
