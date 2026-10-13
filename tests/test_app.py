@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import pickle
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,8 +13,9 @@ from app import main
 from app.db import Database
 from app.config import Settings
 from app.integrations import (DownloadProvider, IntegrationError, YouTubeUploader,
-                              normalize_channel_id, oauth_authorization_url,
-                              _configure_oauth_redirect_transport)
+                              import_google_credentials_pickle, normalize_channel_id, oauth_authorization_url,
+                              _configure_oauth_redirect_transport, YOUTUBE_SCOPE)
+from google.oauth2.credentials import Credentials
 from app.security import SecretBox, decrypt_secret, encrypt_secret, new_csrf_token, valid_csrf, redact_sensitive
 from app.worker import Worker
 
@@ -130,6 +133,38 @@ def test_oauth_transport_guard_is_disabled_for_any_uri(monkeypatch):
     _configure_oauth_redirect_transport("https://example.com/oauth/callback")
     _configure_oauth_redirect_transport("custom://callback/path")
     assert __import__("os").environ["OAUTHLIB_INSECURE_TRANSPORT"] == "1"
+
+
+def _sample_google_credentials():
+    return Credentials(token="test-access", refresh_token="test-refresh",
+                       token_uri="https://oauth2.googleapis.com/token",
+                       client_id="test-client.apps.googleusercontent.com",
+                       client_secret="test-client-secret", scopes=[YOUTUBE_SCOPE])
+
+
+def test_restricted_token_pickle_import_accepts_google_credentials_and_rejects_code():
+    parsed = json.loads(import_google_credentials_pickle(pickle.dumps(_sample_google_credentials())))
+    assert parsed["refresh_token"] == "test-refresh"
+    with pytest.raises(IntegrationError, match="Unsupported or invalid"):
+        import_google_credentials_pickle(pickle.dumps(os.system))
+
+
+def test_token_pickle_upload_is_authenticated_and_stores_encrypted_credentials(application):
+    client, db, _ = application
+    login_page = client.get("/login")
+    import re
+    csrf = re.search(r'name="csrf" value="([^\"]+)"', login_page.text).group(1)
+    denied = client.post("/oauth/import-pickle", data={"csrf": csrf}, follow_redirects=False)
+    assert denied.status_code == 303
+    client.post("/login", data={"username": "admin", "password": "Test-Only-Password-8Dq!x9", "csrf": csrf})
+    settings_page = client.get("/settings")
+    csrf = re.search(r'name="csrf" value="([^\"]+)"', settings_page.text).group(1)
+    response = client.post("/oauth/import-pickle", data={"csrf": csrf},
+                           files={"token_file": ("token.pickle", pickle.dumps(_sample_google_credentials()), "application/octet-stream")},
+                           follow_redirects=False)
+    assert response.status_code == 303
+    stored = db.one("SELECT credentials_enc FROM oauth_tokens WHERE id=1")
+    assert json.loads(decrypt_secret(stored["credentials_enc"]))["refresh_token"] == "test-refresh"
 
 
 def test_oauth_url_has_state_and_minimum_scope():

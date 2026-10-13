@@ -12,4 +12,5 @@ Please do not publish access tokens, credentials, signed media URLs, or live dat
 - Back up `ENCRYPTION_KEY` separately from the database; both are needed to recover encrypted credentials.
 - Do not expose port 8000 publicly without a reverse proxy, firewall controls, and appropriate hardening. Use HTTPS; plain HTTP OAuth callbacks are enabled but vulnerable to interception.
 - Use a unique administrator password and protect GitHub deploy credentials.
+- Token pickle import is limited to allowlisted Google-auth classes; import only a credential file you created and trust. The file contains a refresh token and should be kept private.
 - Review source rights before approval and test with private uploads first.

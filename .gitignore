@@ -17,3 +17,5 @@ token.pickle
 token.pkl
 *.pickle
 *.pkl
+
+tools/token.local.py

@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import io
 import json
 import os
+import pickle
 import re
 import shutil
 import time
 import xml.etree.ElementTree as ET
+from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -15,6 +18,7 @@ from urllib.parse import urlparse
 os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
 
 import requests
+from google.auth import _regional_access_boundary_utils as _rab
 from google.auth.transport.requests import Request as GoogleRequest
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
@@ -30,6 +34,54 @@ class IntegrationError(RuntimeError):
     def __init__(self, message: str, retryable: bool = False):
         super().__init__(message)
         self.retryable = retryable
+
+
+MAX_TOKEN_PICKLE_BYTES = 1_000_000
+_ALLOWED_CREDENTIAL_PICKLE_GLOBALS = {
+    ("google.oauth2.credentials", "Credentials"): Credentials,
+    ("google.auth._regional_access_boundary_utils", "_RegionalAccessBoundaryManager"): _rab._RegionalAccessBoundaryManager,
+    ("google.auth._regional_access_boundary_utils", "_RegionalAccessBoundaryData"): _rab._RegionalAccessBoundaryData,
+    ("google.auth._regional_access_boundary_utils", "_RegionalAccessBoundaryRefreshManager"): _rab._RegionalAccessBoundaryRefreshManager,
+    ("datetime", "datetime"): datetime,
+    ("datetime", "timedelta"): timedelta,
+    ("datetime", "timezone"): timezone,
+    ("builtins", "set"): set,
+    ("builtins", "frozenset"): frozenset,
+}
+
+
+class _CredentialUnpickler(pickle.Unpickler):
+    """Only construct google-auth credential data; refuse all other pickle globals."""
+
+    def find_class(self, module: str, name: str):
+        allowed = _ALLOWED_CREDENTIAL_PICKLE_GLOBALS.get((module, name))
+        if allowed is None:
+            raise pickle.UnpicklingError("Unsupported pickle global")
+        return allowed
+
+    def persistent_load(self, pid):
+        raise pickle.UnpicklingError("Persistent pickle references are not supported")
+
+
+def import_google_credentials_pickle(payload: bytes) -> str:
+    """Safely import a compatible token.pickle and return authorized-user JSON."""
+    if not payload or len(payload) > MAX_TOKEN_PICKLE_BYTES:
+        raise IntegrationError("token.pickle is empty or exceeds the 1 MB import limit")
+    try:
+        credentials = _CredentialUnpickler(io.BytesIO(payload)).load()
+    except Exception as exc:
+        raise IntegrationError("Unsupported or invalid token.pickle; use a Google-auth Credentials file") from exc
+    if type(credentials) is not Credentials:
+        raise IntegrationError("token.pickle must contain a Google-auth Credentials object")
+    if not credentials.refresh_token or not credentials.client_id or not credentials.client_secret:
+        raise IntegrationError("The credential file must include a refresh token and OAuth client credentials")
+    token_uri = urlparse(credentials.token_uri or "")
+    if token_uri.scheme != "https" or token_uri.netloc not in {"oauth2.googleapis.com", "accounts.google.com"} or token_uri.path not in {"/token", "/o/oauth2/token"}:
+        raise IntegrationError("The token file has an unsupported OAuth token endpoint")
+    scopes = set(credentials.granted_scopes or credentials.scopes or [])
+    if YOUTUBE_SCOPE not in scopes:
+        raise IntegrationError("The token file must include the youtube.upload OAuth scope")
+    return credentials.to_json()
 
 
 @dataclass

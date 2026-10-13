@@ -13,6 +13,7 @@ A self-hosted, single-administrator dashboard and background worker for monitori
 - Manual video approval enabled by default, and private visibility selected by default.
 - Provider adapter for the API contract at [`video-download-api.com/api/docs`](https://video-download-api.com/api/docs): create a job with `/ajax/download.php`, poll `/ajax/progress.php`, and stream the completed file to disk. Download files are size-limited and the returned URL is restricted to HTTPS on `p.savenow.to`.
 - Google OAuth using only `youtube.upload`, encrypted credential storage, token refresh, and chunked resumable uploads with persisted session URLs.
+- Import-only upload for a compatible Google `token.pickle`; a local Desktop OAuth helper at `tools/token.py` opens Google sign-in and creates the file.
 - Recovery safeguards: completed media downloads are reused across retries; interrupted/uncertain uploads are held for manual reconciliation, with an option to resume the saved YouTube session rather than start a duplicate upload.
 - A one-command Ubuntu installer and systemd service running under an unprivileged account.
 
@@ -77,7 +78,7 @@ Run the app with `python -m app.run`. It binds to `127.0.0.1:8000` by default. R
 2. Configure the OAuth consent screen and create an OAuth client of type **Web application**.
 3. Set the authorized redirect URI to the URI shown in the dashboard. OAuth always uses `http://localhost:<APP_PORT>/oauth/callback` through the SSH tunnel and is independent of `BASE_URL`; register this exact URI in Google Cloud.
 4. `BASE_URL` may be configured for other app URLs, but does not change the OAuth callback. OAuthlib transport validation is disabled for this app as requested; external OAuth providers may still enforce their own redirect URI rules.
-5. In the dashboard, open **Connections & settings**, save the OAuth client ID and secret, and choose **Connect Google account**.
+5. In the dashboard, open **Connections & settings**, save the OAuth client ID and secret, and choose **Connect Google account**. If that flow still fails, use `tools/token.py` locally: create a Google OAuth client of type **Desktop app**, copy `tools/token.py` to `tools/token.local.py`, paste that client's ID and secret into the local copy, install `google-auth-oauthlib` (`python -m pip install google-auth-oauthlib`), and run `python tools/token.local.py`. Complete Google sign-in in the browser, then upload the generated `token.pickle` in the dashboard. The uploader accepts only Google-auth credentials with `youtube.upload`; unsupported pickle objects are rejected.
 
 Google may require OAuth app verification or may restrict uploads for unverified projects. Review current Google/YouTube policy, OAuth verification, API quota, and channel eligibility in the relevant consoles before unattended or public publishing. The service does not promise that every API upload will become publicly available.
 
