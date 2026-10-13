@@ -1,0 +1,25 @@
+[Unit]
+Description=YT Uploader authorized publishing dashboard and worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=yt-uploader
+Group=yt-uploader
+WorkingDirectory=/opt/yt-uploader
+EnvironmentFile=/etc/yt-uploader/yt-uploader.env
+ExecStart=/opt/yt-uploader/venv/bin/python -m app.run
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=20
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/yt-uploader /var/log/yt-uploader
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

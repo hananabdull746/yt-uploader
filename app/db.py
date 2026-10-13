@@ -1,0 +1,177 @@
+from __future__ import annotations
+
+import json
+import sqlite3
+import time
+from contextlib import contextmanager
+from pathlib import Path
+from typing import Any, Iterator
+
+SCHEMA = """
+PRAGMA foreign_keys=ON;
+CREATE TABLE IF NOT EXISTS sources (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  channel_id TEXT NOT NULL UNIQUE,
+  title TEXT NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  initialized INTEGER NOT NULL DEFAULT 0,
+  last_polled_at INTEGER,
+  last_video_id TEXT,
+  authorization_note TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS seen_videos (
+  video_id TEXT PRIMARY KEY,
+  source_id INTEGER NOT NULL REFERENCES sources(id) ON DELETE RESTRICT,
+  seen_at INTEGER NOT NULL,
+  is_baseline INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS jobs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  source_id INTEGER REFERENCES sources(id) ON DELETE SET NULL,
+  source_channel_id TEXT NOT NULL,
+  source_title TEXT NOT NULL DEFAULT '',
+  video_id TEXT NOT NULL UNIQUE,
+  source_url TEXT NOT NULL,
+  title TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'queued',
+  approved INTEGER NOT NULL DEFAULT 0,
+  progress INTEGER NOT NULL DEFAULT 0,
+  stage TEXT NOT NULL DEFAULT 'queued',
+  attempts INTEGER NOT NULL DEFAULT 0,
+  next_attempt_at INTEGER,
+  error TEXT,
+  provider_job_id TEXT,
+  upload_session_enc TEXT,
+  upload_started_at INTEGER,
+  media_path TEXT,
+  youtube_id TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_jobs_status_created ON jobs(status, created_at);
+CREATE INDEX IF NOT EXISTS idx_jobs_source ON jobs(source_id);
+CREATE TABLE IF NOT EXISTS settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL,
+  is_secret INTEGER NOT NULL DEFAULT 0,
+  updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS oauth_tokens (
+  id INTEGER PRIMARY KEY CHECK (id=1),
+  credentials_enc TEXT NOT NULL,
+  connected_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  severity TEXT NOT NULL DEFAULT 'info',
+  message TEXT NOT NULL,
+  source_id INTEGER,
+  job_id INTEGER,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_events_created ON events(created_at DESC);
+"""
+
+
+class Database:
+    def __init__(self, path: str | Path):
+        self.path = Path(path)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+
+    def connect(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(str(self.path), timeout=30, isolation_level=None)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys=ON")
+        conn.execute("PRAGMA busy_timeout=30000")
+        return conn
+
+    def initialize(self) -> None:
+        conn = self.connect()
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.executescript(SCHEMA)
+            # Small forward-compatible migrations for databases created by older builds.
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(jobs)")}
+            for name, declaration in (("approved", "INTEGER NOT NULL DEFAULT 0"),
+                                      ("stage", "TEXT NOT NULL DEFAULT 'queued'"),
+                                      ("upload_session_enc", "TEXT"),
+                                      ("upload_started_at", "INTEGER"),
+                                      ("next_attempt_at", "INTEGER"),
+                                      ("media_path", "TEXT")):
+                if name not in columns:
+                    conn.execute(f"ALTER TABLE jobs ADD COLUMN {name} {declaration}")
+            source_columns = {row[1] for row in conn.execute("PRAGMA table_info(sources)")}
+            for name, declaration in (("initialized", "INTEGER NOT NULL DEFAULT 0"),
+                                      ("last_video_id", "TEXT"),
+                                      ("authorization_note", "TEXT NOT NULL DEFAULT ''")):
+                if name not in source_columns:
+                    conn.execute(f"ALTER TABLE sources ADD COLUMN {name} {declaration}")
+        finally:
+            conn.close()
+
+    @contextmanager
+    def transaction(self, immediate: bool = False) -> Iterator[sqlite3.Connection]:
+        conn = self.connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE" if immediate else "BEGIN")
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def all(self, sql: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
+        conn = self.connect()
+        try:
+            return [dict(row) for row in conn.execute(sql, params).fetchall()]
+        finally:
+            conn.close()
+
+    def one(self, sql: str, params: tuple[Any, ...] = ()) -> dict[str, Any] | None:
+        conn = self.connect()
+        try:
+            row = conn.execute(sql, params).fetchone()
+            return dict(row) if row else None
+        finally:
+            conn.close()
+
+    def execute(self, sql: str, params: tuple[Any, ...] = ()) -> int:
+        with self.transaction(immediate=True) as conn:
+            cur = conn.execute(sql, params)
+            return cur.lastrowid or cur.rowcount
+
+    def event(self, message: str, severity: str = "info", source_id: int | None = None,
+              job_id: int | None = None) -> None:
+        self.execute("INSERT INTO events(severity,message,source_id,job_id,created_at) VALUES(?,?,?,?,?)",
+                     (severity, message[:2000], source_id, job_id, int(time.time())))
+
+    def get_setting(self, key: str) -> tuple[str | None, bool]:
+        row = self.one("SELECT value,is_secret FROM settings WHERE key=?", (key,))
+        return (row["value"], bool(row["is_secret"])) if row else (None, False)
+
+    def set_setting(self, key: str, value: str, is_secret: bool = False) -> None:
+        now = int(time.time())
+        self.execute("INSERT INTO settings(key,value,is_secret,updated_at) VALUES(?,?,?,?) "
+                     "ON CONFLICT(key) DO UPDATE SET value=excluded.value,is_secret=excluded.is_secret,updated_at=excluded.updated_at",
+                     (key, value, int(is_secret), now))
+
+    def claim_next_job(self) -> dict[str, Any] | None:
+        """Claim exactly one approved queued/retry job under an IMMEDIATE transaction."""
+        with self.transaction(immediate=True) as conn:
+            row = conn.execute("SELECT * FROM jobs WHERE approved=1 AND (status='queued' OR (status='retry' AND COALESCE(next_attempt_at,0)<=?)) "
+                               "ORDER BY created_at,id LIMIT 1", (int(time.time()),)).fetchone()
+            if not row:
+                return None
+            now = int(time.time())
+            conn.execute("UPDATE jobs SET status='downloading',stage='downloading',attempts=attempts+1,next_attempt_at=NULL,updated_at=? WHERE id=?",
+                         (now, row["id"]))
+            return dict(conn.execute("SELECT * FROM jobs WHERE id=?", (row["id"],)).fetchone())
+
+
+def encode_json(value: Any) -> str:
+    return json.dumps(value, separators=(",", ":"), ensure_ascii=False)
