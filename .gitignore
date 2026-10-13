@@ -13,3 +13,7 @@ logs/
 *.sqlite3-shm
 *.sqlite3-wal
 .DS_Store
+token.pickle
+token.pkl
+*.pickle
+*.pkl

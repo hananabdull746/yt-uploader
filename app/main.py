@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import pickle
 import secrets
 import time
 from contextlib import asynccontextmanager
@@ -9,7 +10,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, Form, HTTPException, Request
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -19,7 +20,8 @@ load_dotenv()
 
 from .config import settings
 from .db import Database
-from .integrations import IntegrationError, fetch_channel_feed, normalize_channel_id, oauth_authorization_url, oauth_exchange
+from .integrations import (IntegrationError, fetch_channel_feed, import_google_credentials_pickle,
+                           load_credentials, normalize_channel_id, oauth_authorization_url, oauth_exchange)
 from .security import decrypt_secret, encrypt_secret, hash_password, login_allowed, new_csrf_token, record_login_failure, clear_login_failures, valid_csrf, verify_password, redact_sensitive
 from .worker import Worker
 
@@ -431,6 +433,44 @@ def oauth_callback(request: Request, code: str | None = None, state: str | None 
     except Exception as exc:
         raise HTTPException(400, "Google OAuth connection failed: " + redact_sensitive(exc, 500))
     return RedirectResponse("/settings?message=YouTube%20destination%20connected", status_code=303)
+
+
+@app.post("/oauth/import-pickle")
+async def oauth_import_pickle(request: Request, csrf: str = Form(...), token_file: UploadFile = File(...),
+                              username: str = Depends(require_login)):
+    assert_csrf(request, csrf)
+    filename = (token_file.filename or "").replace("\\", "/").rsplit("/", 1)[-1]
+    if Path(filename).suffix.lower() not in {".pickle", ".pkl"}:
+        raise HTTPException(422, "Choose a .pickle or .pkl Google credential file")
+    payload = await token_file.read(1_000_001)
+    await token_file.close()
+    try:
+        credentials_json = import_google_credentials_pickle(payload)
+    except IntegrationError as exc:
+        return RedirectResponse("/settings?error=" + quote(str(exc)), status_code=303)
+    now = int(time.time())
+    DB.execute("INSERT INTO oauth_tokens(id,credentials_enc,connected_at,updated_at) VALUES(1,?,?,?) "
+               "ON CONFLICT(id) DO UPDATE SET credentials_enc=excluded.credentials_enc,connected_at=excluded.connected_at,updated_at=excluded.updated_at",
+               (encrypt_secret(credentials_json), now, now))
+    DB.event("Google token.pickle credentials imported by administrator")
+    return RedirectResponse("/settings?message=Google%20credentials%20imported", status_code=303)
+
+
+@app.post("/oauth/export-pickle")
+def oauth_export_pickle(request: Request, csrf: str = Form(...), username: str = Depends(require_login)):
+    assert_csrf(request, csrf)
+    row = DB.one("SELECT credentials_enc FROM oauth_tokens WHERE id=1")
+    if not row:
+        raise HTTPException(409, "Connect or import a Google account before exporting credentials")
+    try:
+        credentials = load_credentials(decrypt_secret(row["credentials_enc"]))
+        payload = pickle.dumps(credentials, protocol=pickle.HIGHEST_PROTOCOL)
+    except Exception as exc:
+        raise HTTPException(500, "Could not serialize the stored Google credentials") from exc
+    DB.event("Google token.pickle credentials exported by administrator")
+    return Response(payload, media_type="application/octet-stream",
+                    headers={"Content-Disposition": 'attachment; filename="token.pickle"',
+                             "Cache-Control": "no-store, private", "Pragma": "no-cache"})
 
 
 @app.post("/oauth/disconnect")
