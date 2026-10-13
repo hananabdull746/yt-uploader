@@ -195,7 +195,20 @@ class DownloadProvider:
         raise IntegrationError("Timed out waiting for the provider download to finish", retryable=True)
 
 
+def _configure_oauth_redirect_transport(redirect_uri: str) -> None:
+    """Allow OAuthlib HTTP only for a loopback callback carried by the SSH tunnel."""
+    parsed = urlparse(redirect_uri)
+    if parsed.scheme == "https":
+        return
+    if parsed.scheme == "http" and parsed.hostname in {"127.0.0.1", "localhost", "::1"}:
+        # Google authorization/token endpoints remain HTTPS; only the callback URI is loopback.
+        os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
+        return
+    raise IntegrationError("OAuth redirect URI must use HTTPS; HTTP is allowed only for localhost/loopback SSH-tunnel access")
+
+
 def oauth_authorization_url(client_id: str, client_secret: str, redirect_uri: str, state: str) -> str:
+    _configure_oauth_redirect_transport(redirect_uri)
     flow = Flow.from_client_config({"web": {"client_id": client_id, "client_secret": client_secret,
           "auth_uri": "https://accounts.google.com/o/oauth2/auth",
           "token_uri": "https://oauth2.googleapis.com/token", "redirect_uris": [redirect_uri]}},
@@ -206,6 +219,7 @@ def oauth_authorization_url(client_id: str, client_secret: str, redirect_uri: st
 
 def oauth_exchange(client_id: str, client_secret: str, redirect_uri: str, state: str,
                    callback_url: str) -> str:
+    _configure_oauth_redirect_transport(redirect_uri)
     flow = Flow.from_client_config({"web": {"client_id": client_id, "client_secret": client_secret,
           "auth_uri": "https://accounts.google.com/o/oauth2/auth",
           "token_uri": "https://oauth2.googleapis.com/token", "redirect_uris": [redirect_uri]}},

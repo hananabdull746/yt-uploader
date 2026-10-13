@@ -10,7 +10,7 @@ import pytest
 from app import main
 from app.db import Database
 from app.integrations import (DownloadProvider, IntegrationError, YouTubeUploader,
-                              normalize_channel_id, oauth_authorization_url)
+                              normalize_channel_id, oauth_authorization_url, _configure_oauth_redirect_transport)
 from app.security import SecretBox, decrypt_secret, encrypt_secret, new_csrf_token, valid_csrf, redact_sensitive
 from app.worker import Worker
 
@@ -112,6 +112,17 @@ def test_media_streaming_enforces_maximum_size(tmp_path):
     response.iter_content = lambda chunk_size: iter([b"four"])
     with pytest.raises(IntegrationError, match="maximum"):
         provider._stream_response(response, tmp_path / "large.part", tmp_path / "large")
+
+
+def test_oauth_http_transport_is_limited_to_loopback(monkeypatch):
+    monkeypatch.delenv("OAUTHLIB_INSECURE_TRANSPORT", raising=False)
+    _configure_oauth_redirect_transport("http://127.0.0.1:8000/oauth/callback")
+    assert __import__("os").environ["OAUTHLIB_INSECURE_TRANSPORT"] == "1"
+    monkeypatch.delenv("OAUTHLIB_INSECURE_TRANSPORT", raising=False)
+    _configure_oauth_redirect_transport("https://uploader.example/oauth/callback")
+    assert "OAUTHLIB_INSECURE_TRANSPORT" not in __import__("os").environ
+    with pytest.raises(IntegrationError, match="HTTPS"):
+        _configure_oauth_redirect_transport("http://uploader.example/oauth/callback")
 
 
 def test_oauth_url_has_state_and_minimum_scope():
