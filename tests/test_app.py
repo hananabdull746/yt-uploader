@@ -14,7 +14,7 @@ from app.db import Database
 from app.config import Settings
 from app.integrations import (DownloadProvider, IntegrationError, YouTubeUploader,
                               import_google_credentials_pickle, normalize_channel_id, oauth_authorization_url, oauth_exchange,
-                              _configure_oauth_redirect_transport, YOUTUBE_SCOPE)
+                              _configure_oauth_redirect_transport, YOUTUBE_SCOPE, download_best_thumbnail)
 from google.oauth2.credentials import Credentials
 from app.security import SecretBox, decrypt_secret, encrypt_secret, new_csrf_token, valid_csrf, redact_sensitive
 from app.worker import Worker
@@ -383,3 +383,58 @@ def test_reconcile_requires_explicit_no_upload_confirmation(application):
     row = db.one("SELECT status,upload_session_enc FROM jobs WHERE id=1")
     assert row["status"] == "queued"
     assert row["upload_session_enc"] == "encrypted-session"
+
+
+def test_download_best_thumbnail_fallback(monkeypatch, tmp_path):
+    attempts = []
+    def fake_get(url, timeout, headers):
+        attempts.append(url)
+        if "maxresdefault" in url:
+            return SimpleNamespace(status_code=404, content=b"")
+        if "sddefault" in url:
+            return SimpleNamespace(status_code=404, content=b"")
+        if "hqdefault" in url:
+            return SimpleNamespace(status_code=200, content=b"x" * 1500)
+        return SimpleNamespace(status_code=404, content=b"")
+
+    monkeypatch.setattr("app.integrations.requests.get", fake_get)
+    result = download_best_thumbnail("testvid123", tmp_path)
+    assert result is not None
+    assert result.is_file()
+    assert result.stat().st_size == 1500
+    assert any("maxresdefault" in a for a in attempts)
+    assert any("hqdefault" in a for a in attempts)
+
+
+def test_youtube_uploader_set_thumbnail(monkeypatch, tmp_path):
+    captured = {}
+    def fake_post(url, params, headers, data, timeout):
+        captured["url"] = url
+        captured["params"] = params
+        captured["headers"] = headers
+        captured["data"] = data.read()
+        return SimpleNamespace(status_code=200, json=lambda: {"kind": "youtube#thumbnailSetResponse"})
+
+    monkeypatch.setattr("app.integrations.requests.post", fake_post)
+    uploader = YouTubeUploader.__new__(YouTubeUploader)
+    uploader._access_token = lambda: "fake-token"
+    uploader.timeout = 15
+
+    thumb_file = tmp_path / "thumb-sample.jpg"
+    thumb_file.write_bytes(b"image-data-bytes")
+
+    assert uploader.set_thumbnail("vid999", thumb_file) is True
+    assert captured["params"]["videoId"] == "vid999"
+    assert captured["params"]["uploadType"] == "media"
+    assert captured["headers"]["Authorization"] == "Bearer fake-token"
+    assert captured["headers"]["Content-Type"] == "image/jpeg"
+    assert captured["data"] == b"image-data-bytes"
+
+
+def test_database_initialization_includes_thumbnail_path(tmp_path):
+    db = Database(tmp_path / "test.db")
+    db.initialize()
+    conn = db.connect()
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(jobs)").fetchall()}
+    conn.close()
+    assert "thumbnail_path" in columns

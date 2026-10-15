@@ -8,7 +8,7 @@ from typing import Any
 
 from .config import settings
 from .db import Database
-from .integrations import DownloadProvider, IntegrationError, YouTubeUploader, fetch_channel_feed
+from .integrations import DownloadProvider, IntegrationError, YouTubeUploader, fetch_channel_feed, download_best_thumbnail
 from .security import decrypt_secret, encrypt_secret, redact_sensitive
 
 
@@ -77,13 +77,14 @@ class Worker:
             return 0
         now = time.time()
         referenced = {str(Path(row["media_path"]).resolve()) for row in self.db.all("SELECT media_path FROM jobs WHERE media_path IS NOT NULL")}
+        referenced.update(str(Path(row["thumbnail_path"]).resolve()) for row in self.db.all("SELECT thumbnail_path FROM jobs WHERE thumbnail_path IS NOT NULL"))
         removed = 0
         for path in root.iterdir():
             if not path.is_file():
                 continue
             age = now - path.stat().st_mtime
             stale_partial = path.name.endswith(".part") and age > partial_age_seconds
-            stale_orphan = path.suffix == ".mp4" and age > orphan_age_seconds and str(path.resolve()) not in referenced
+            stale_orphan = path.suffix in {".mp4", ".jpg", ".jpeg"} and age > orphan_age_seconds and str(path.resolve()) not in referenced
             if stale_partial or stale_orphan:
                 path.unlink(missing_ok=True)
                 removed += 1
@@ -186,6 +187,17 @@ class Worker:
                            progress=lambda p: self._update_progress(job_id, p, "downloading"))
                 self.db.execute("UPDATE jobs SET media_path=?,updated_at=? WHERE id=?",
                                 (str(media_path), int(time.time()), job_id))
+            thumbnail_path = None
+            saved_thumb = job.get("thumbnail_path")
+            if saved_thumb:
+                cand_thumb = Path(saved_thumb).resolve()
+                if cand_thumb.is_relative_to(download_root) and cand_thumb.is_file() and cand_thumb.stat().st_size > 0:
+                    thumbnail_path = cand_thumb
+            if thumbnail_path is None and job.get("video_id"):
+                thumbnail_path = download_best_thumbnail(job["video_id"], settings.downloads_path, timeout=settings.request_timeout)
+                if thumbnail_path:
+                    self.db.execute("UPDATE jobs SET thumbnail_path=?,updated_at=? WHERE id=?",
+                                    (str(thumbnail_path), int(time.time()), job_id))
             token_row = self.db.one("SELECT credentials_enc FROM oauth_tokens WHERE id=1")
             if not token_row:
                 raise IntegrationError("Connect a destination YouTube account before processing jobs")
@@ -222,8 +234,16 @@ class Worker:
             }, settings_row.get("privacy_status", "private"), saved_session=session_uri,
                save_session=save_session, on_progress=lambda p: self._update_progress(job_id, p, "uploading"),
                on_upload_start=mark_upload_started)
+            if thumbnail_path and thumbnail_path.is_file():
+                try:
+                    uploader.set_thumbnail(video_id, thumbnail_path)
+                    self.db.event(f"Custom thumbnail uploaded for video {video_id}", job_id=job_id)
+                except Exception as thumb_err:
+                    self.db.event(f"Thumbnail upload notice: {thumb_err}", severity="warning", job_id=job_id)
+                finally:
+                    thumbnail_path.unlink(missing_ok=True)
             now = int(time.time())
-            self.db.execute("UPDATE jobs SET status='completed',stage='completed',progress=100,youtube_id=?,error=NULL,upload_session_enc=NULL,upload_started_at=NULL,media_path=NULL,updated_at=? WHERE id=?",
+            self.db.execute("UPDATE jobs SET status='completed',stage='completed',progress=100,youtube_id=?,error=NULL,upload_session_enc=NULL,upload_started_at=NULL,media_path=NULL,thumbnail_path=NULL,updated_at=? WHERE id=?",
                             (video_id, now, job_id))
             media_path.unlink(missing_ok=True)
             self.db.event(f"Upload completed; destination video ID {video_id}", job_id=job_id)

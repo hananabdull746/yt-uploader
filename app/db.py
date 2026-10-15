@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   upload_session_enc TEXT,
   upload_started_at INTEGER,
   media_path TEXT,
+  thumbnail_path TEXT,
   youtube_id TEXT,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
@@ -100,7 +101,8 @@ class Database:
                                       ("upload_session_enc", "TEXT"),
                                       ("upload_started_at", "INTEGER"),
                                       ("next_attempt_at", "INTEGER"),
-                                      ("media_path", "TEXT")):
+                                      ("media_path", "TEXT"),
+                                      ("thumbnail_path", "TEXT")):
                 if name not in columns:
                     conn.execute(f"ALTER TABLE jobs ADD COLUMN {name} {declaration}")
             source_columns = {row[1] for row in conn.execute("PRAGMA table_info(sources)")}

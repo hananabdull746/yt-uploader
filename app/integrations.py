@@ -138,6 +138,34 @@ def fetch_channel_feed(channel_id: str, timeout: int = 20) -> tuple[str, list[Fe
     return channel or channel_id, entries
 
 
+def download_best_thumbnail(video_id: str, download_dir: Path | str, timeout: int = 20) -> Path | None:
+    """Download the highest available quality thumbnail from YouTube CDN."""
+    dest_dir = Path(download_dir)
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    destination = dest_dir / f"thumb-{video_id}.jpg"
+    if destination.is_file() and destination.stat().st_size > 0:
+        return destination
+
+    # YouTube thumbnail qualities from highest to lowest available:
+    qualities = [
+        "maxresdefault.jpg",  # 1280x720 (HD)
+        "sddefault.jpg",       # 640x480 (SD)
+        "hqdefault.jpg",       # 480x360 (High Quality)
+        "mqdefault.jpg",       # 320x180 (Medium Quality)
+        "default.jpg",         # 120x90 (Fallback)
+    ]
+    for filename in qualities:
+        url = f"https://i.ytimg.com/vi/{video_id}/{filename}"
+        try:
+            resp = requests.get(url, timeout=timeout, headers={"User-Agent": "YT-Uploader/1.0 (+self-hosted publisher)"})
+            if resp.status_code == 200 and len(resp.content) > 1000:
+                destination.write_bytes(resp.content)
+                return destination
+        except requests.RequestException:
+            continue
+    return None
+
+
 class DownloadProvider:
     """Adapter for https://video-download-api.com/api/docs (SaveNow-compatible API)."""
     def __init__(self, api_key: str, timeout: int = 30, max_bytes: int = 4 * 1024**3,
@@ -444,3 +472,31 @@ class YouTubeUploader:
         if response.status_code in (404, 410):
             raise IntegrationError("Resumable upload session expired; review the job before starting a new upload")
         return 0, None
+
+    def set_thumbnail(self, video_id: str, thumbnail_path: str | Path) -> bool:
+        """Upload and assign a custom thumbnail to an uploaded YouTube video."""
+        path = Path(thumbnail_path)
+        if not path.is_file() or path.stat().st_size <= 0:
+            return False
+        content_type = "image/png" if path.suffix.lower() == ".png" else "image/jpeg"
+        headers = {
+            "Authorization": f"Bearer {self._access_token()}",
+            "Content-Type": content_type,
+            "Accept": "application/json",
+        }
+        try:
+            with path.open("rb") as f:
+                response = requests.post(
+                    "https://www.googleapis.com/upload/youtube/v3/thumbnails/set",
+                    params={"videoId": video_id, "uploadType": "media"},
+                    headers=headers,
+                    data=f,
+                    timeout=self.timeout
+                )
+        except requests.RequestException as exc:
+            raise IntegrationError(f"Thumbnail upload request failed: {exc}", retryable=True) from exc
+        if response.status_code in (200, 201):
+            return True
+        if response.status_code == 403:
+            raise IntegrationError(f"Custom thumbnail upload rejected (channel may require phone verification in YouTube Studio): {response.text[:300]}")
+        raise IntegrationError(f"Custom thumbnail upload failed (HTTP {response.status_code}): {response.text[:300]}")
