@@ -98,6 +98,8 @@ def test_provider_status_requires_success_and_safe_url(monkeypatch, tmp_path):
     assert provider.poll_job("job") is None
     monkeypatch.setattr("app.integrations.requests.get", lambda *a, **k: SimpleNamespace(ok=True, status_code=200, json=lambda: {"success": 1, "progress": 1000, "download_url": "https://p.savenow.to/file.mp4"}))
     assert provider.poll_job("job").startswith("https://p.savenow.to/")
+    monkeypatch.setattr("app.integrations.requests.get", lambda *a, **k: SimpleNamespace(ok=True, status_code=200, json=lambda: {"success": 1, "progress": 1000, "download_url": "https://leo3.savenow.to/file.mp4"}))
+    assert provider.poll_job("job").startswith("https://leo3.savenow.to/")
     monkeypatch.setattr("app.integrations.requests.get", lambda *a, **k: SimpleNamespace(ok=True, status_code=200, json=lambda: {"success": 1, "progress": 1000, "download_url": "http://127.0.0.1/admin"}))
     with pytest.raises(IntegrationError, match="untrusted"):
         provider.poll_job("job")

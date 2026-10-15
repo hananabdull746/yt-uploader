@@ -27,7 +27,14 @@ from google_auth_oauthlib.flow import Flow
 YOUTUBE_SCOPE = "https://www.googleapis.com/auth/youtube.upload"
 YOUTUBE_FEED = "https://www.youtube.com/feeds/videos.xml?channel_id={}"
 PROVIDER_BASE = "https://p.savenow.to"
-ALLOWED_DOWNLOAD_HOSTS = {"p.savenow.to"}
+ALLOWED_DOWNLOAD_HOSTS = {"p.savenow.to", "savenow.to"}
+
+
+def is_allowed_download_host(host: str | None) -> bool:
+    if not host:
+        return False
+    host = host.lower()
+    return host == "savenow.to" or host.endswith(".savenow.to") or host == "video-download-api.com" or host.endswith(".video-download-api.com")
 YT_NS = {"atom": "http://www.w3.org/2005/Atom", "yt": "http://www.youtube.com/xml/schemas/2015"}
 
 
@@ -189,13 +196,13 @@ class DownloadProvider:
         if data.get("success") not in (True, 1, "1") or not url:
             raise IntegrationError(str(data.get("text") or data.get("message") or "Provider marked download unsuccessful")[:500])
         parsed = urlparse(str(url))
-        if parsed.scheme != "https" or parsed.hostname not in ALLOWED_DOWNLOAD_HOSTS:
-            raise IntegrationError("Provider returned an untrusted download URL; only HTTPS URLs from p.savenow.to are accepted")
+        if parsed.scheme != "https" or not is_allowed_download_host(parsed.hostname):
+            raise IntegrationError(f"Provider returned an untrusted download URL ({parsed.hostname}); only HTTPS URLs from savenow.to are accepted")
         return str(url)
 
     def download(self, download_url: str, job_id: int, free_bytes: int | None = None) -> Path:
         parsed = urlparse(download_url)
-        if parsed.scheme != "https" or parsed.hostname not in ALLOWED_DOWNLOAD_HOSTS:
+        if parsed.scheme != "https" or not is_allowed_download_host(parsed.hostname):
             raise IntegrationError("Refusing to download from a non-allowlisted host")
         available = shutil.disk_usage(self.download_dir).free if free_bytes is None else free_bytes
         if available < min(self.max_bytes, 64 * 1024**2):
@@ -209,7 +216,7 @@ class DownloadProvider:
                     location = response.headers.get("Location", "")
                     redirect_url = requests.compat.urljoin(download_url, location)
                     redirect = urlparse(redirect_url)
-                    if redirect.scheme != "https" or redirect.hostname not in ALLOWED_DOWNLOAD_HOSTS:
+                    if redirect.scheme != "https" or not is_allowed_download_host(redirect.hostname):
                         raise IntegrationError("Download provider redirected to an untrusted host")
                     response.close()
                     with requests.get(redirect_url, stream=True, timeout=(self.timeout, 120), allow_redirects=False) as redirected:
