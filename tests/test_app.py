@@ -88,7 +88,7 @@ def test_provider_create_job_matches_documented_contract(monkeypatch, tmp_path):
     assert title == "Allowed video"
     assert seen["url"].endswith("/ajax/download.php")
     assert seen["params"]["apikey"] == "secret"
-    assert seen["params"]["format"] == "mp4"
+    assert seen["params"]["format"] == "1080"
     assert seen["params"]["allow_extended_duration"] == "0"
 
 

@@ -145,14 +145,20 @@ class DownloadProvider:
     def create_job(self, video_url: str) -> tuple[str, str]:
         try:
             response = requests.get(f"{self.base_url}/ajax/download.php",
-                                   params={"url": video_url, "format": "mp4", "apikey": self.api_key,
+                                   params={"url": video_url, "format": "1080", "apikey": self.api_key,
                                            "allow_extended_duration": "0"}, timeout=self.timeout)
         except requests.RequestException as exc:
             raise IntegrationError(f"Download provider request failed: {exc}", retryable=True) from exc
         if response.status_code >= 500 or response.status_code == 429:
             raise IntegrationError(f"Download provider returned HTTP {response.status_code}", retryable=True)
         if not response.ok:
-            raise IntegrationError(f"Download provider rejected the request (HTTP {response.status_code})")
+            error_detail = ""
+            try:
+                err_data = response.json()
+                error_detail = f": {err_data.get('message') or err_data.get('errors') or response.text}"
+            except Exception:
+                error_detail = f": {response.text[:200]}" if response.text else ""
+            raise IntegrationError(f"Download provider rejected the request (HTTP {response.status_code}){error_detail}")
         try:
             data = response.json()
         except ValueError as exc:
