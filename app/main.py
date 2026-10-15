@@ -407,8 +407,11 @@ def oauth_start(request: Request, csrf: str = Form(...), username: str = Depends
     state = secrets.token_urlsafe(32)
     request.session["oauth_state"] = state
     try:
-        url = oauth_authorization_url(client_id, client_secret, redirect_uri, state)
+        url, code_verifier = oauth_authorization_url(client_id, client_secret, redirect_uri, state)
+        request.session["oauth_code_verifier"] = code_verifier
     except Exception as exc:
+        request.session.pop("oauth_state", None)
+        request.session.pop("oauth_code_verifier", None)
         return RedirectResponse("/settings?error=" + quote(f"Could not start OAuth: {exc}"), status_code=303)
     return RedirectResponse(url, status_code=302)
 
@@ -416,13 +419,16 @@ def oauth_start(request: Request, csrf: str = Form(...), username: str = Depends
 @app.get("/oauth/callback")
 def oauth_callback(request: Request, code: str | None = None, state: str | None = None, error: str | None = None):
     expected = request.session.pop("oauth_state", None)
+    code_verifier = request.session.pop("oauth_code_verifier", None)
     if error:
         raise HTTPException(400, "Google authorization was not completed")
     if not expected or not state or not secrets.compare_digest(str(expected), str(state)) or not code:
         raise HTTPException(400, "OAuth state check failed. Start the connection flow again.")
+    if not code_verifier:
+        raise HTTPException(400, "OAuth PKCE verifier is missing. Start Google sign-in again.")
     try:
         credentials_json = oauth_exchange(stored_setting("google_client_id") or "", stored_setting("google_client_secret") or "",
-                                          settings.oauth_redirect_uri, state, str(request.url))
+                                          settings.oauth_redirect_uri, state, str(request.url), code_verifier)
         encrypted = encrypt_secret(credentials_json)
         now = int(time.time())
         DB.execute("INSERT INTO oauth_tokens(id,credentials_enc,connected_at,updated_at) VALUES(1,?,?,?) ON CONFLICT(id) DO UPDATE SET credentials_enc=excluded.credentials_enc,updated_at=excluded.updated_at",

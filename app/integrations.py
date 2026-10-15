@@ -5,6 +5,7 @@ import json
 import os
 import pickle
 import re
+import secrets
 import shutil
 import time
 import xml.etree.ElementTree as ET
@@ -255,23 +256,30 @@ def _configure_oauth_redirect_transport(redirect_uri: str) -> None:
     os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
 
 
-def oauth_authorization_url(client_id: str, client_secret: str, redirect_uri: str, state: str) -> str:
+def oauth_authorization_url(client_id: str, client_secret: str, redirect_uri: str, state: str) -> tuple[str, str]:
+    """Build the Google consent URL and return its PKCE verifier for session storage."""
     _configure_oauth_redirect_transport(redirect_uri)
+    code_verifier = secrets.token_urlsafe(64)
     flow = Flow.from_client_config({"web": {"client_id": client_id, "client_secret": client_secret,
           "auth_uri": "https://accounts.google.com/o/oauth2/auth",
           "token_uri": "https://oauth2.googleapis.com/token", "redirect_uris": [redirect_uri]}},
-          scopes=[YOUTUBE_SCOPE], state=state, redirect_uri=redirect_uri)
+          scopes=[YOUTUBE_SCOPE], state=state, redirect_uri=redirect_uri,
+          code_verifier=code_verifier, autogenerate_code_verifier=False)
     url, _ = flow.authorization_url(access_type="offline", prompt="consent", include_granted_scopes="true")
-    return url
+    return url, code_verifier
 
 
 def oauth_exchange(client_id: str, client_secret: str, redirect_uri: str, state: str,
-                   callback_url: str) -> str:
+                   callback_url: str, code_verifier: str) -> str:
+    """Exchange the authorization code using the verifier paired with its PKCE challenge."""
     _configure_oauth_redirect_transport(redirect_uri)
+    if not code_verifier:
+        raise IntegrationError("OAuth PKCE verifier is missing. Start Google sign-in again.")
     flow = Flow.from_client_config({"web": {"client_id": client_id, "client_secret": client_secret,
           "auth_uri": "https://accounts.google.com/o/oauth2/auth",
           "token_uri": "https://oauth2.googleapis.com/token", "redirect_uris": [redirect_uri]}},
-          scopes=[YOUTUBE_SCOPE], state=state, redirect_uri=redirect_uri)
+          scopes=[YOUTUBE_SCOPE], state=state, redirect_uri=redirect_uri,
+          code_verifier=code_verifier, autogenerate_code_verifier=False)
     flow.fetch_token(authorization_response=callback_url)
     credentials = flow.credentials
     if not credentials.refresh_token:

@@ -13,7 +13,7 @@ from app import main
 from app.db import Database
 from app.config import Settings
 from app.integrations import (DownloadProvider, IntegrationError, YouTubeUploader,
-                              import_google_credentials_pickle, normalize_channel_id, oauth_authorization_url,
+                              import_google_credentials_pickle, normalize_channel_id, oauth_authorization_url, oauth_exchange,
                               _configure_oauth_redirect_transport, YOUTUBE_SCOPE)
 from google.oauth2.credentials import Credentials
 from app.security import SecretBox, decrypt_secret, encrypt_secret, new_csrf_token, valid_csrf, redact_sensitive
@@ -167,11 +167,70 @@ def test_token_pickle_upload_is_authenticated_and_stores_encrypted_credentials(a
     assert json.loads(decrypt_secret(stored["credentials_enc"]))["refresh_token"] == "test-refresh"
 
 
-def test_oauth_url_has_state_and_minimum_scope():
-    url = oauth_authorization_url("client-id", "client-secret", "http://localhost/callback", "random-state")
-    assert "random-state" in url
+def test_oauth_url_has_state_scope_and_matching_pkce_verifier():
+    from urllib.parse import parse_qs, urlsplit
+    import base64
+    import hashlib
+    url, verifier = oauth_authorization_url("client-id", "client-secret", "http://localhost/callback", "random-state")
+    params = parse_qs(urlsplit(url).query)
+    assert params["state"] == ["random-state"]
     assert "youtube.upload" in url
-    assert "access_type=offline" in url
+    assert params["access_type"] == ["offline"]
+    assert params["code_challenge_method"] == ["S256"]
+    expected_challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
+    assert params["code_challenge"] == [expected_challenge]
+
+
+def test_oauth_exchange_reuses_original_pkce_verifier(monkeypatch):
+    from app import integrations
+    captured = {}
+    class FakeFlow:
+        credentials = SimpleNamespace(refresh_token="refresh", to_json=lambda: "{}")
+        def fetch_token(self, **kwargs):
+            captured["fetch"] = kwargs
+    def factory(*args, **kwargs):
+        captured["flow"] = kwargs
+        return FakeFlow()
+    monkeypatch.setattr(integrations.Flow, "from_client_config", factory)
+    verifier = "v" * 64
+    assert oauth_exchange("client", "secret", "http://localhost/callback", "state",
+                          "http://localhost/callback?code=abc&state=state", verifier) == "{}"
+    assert captured["flow"]["code_verifier"] == verifier
+    assert captured["flow"]["autogenerate_code_verifier"] is False
+    assert captured["fetch"]["authorization_response"].startswith("http://localhost/")
+
+
+def test_oauth_callback_passes_session_pkce_verifier(application, monkeypatch):
+    from urllib.parse import parse_qs, urlsplit
+    client, db, _ = application
+    monkeypatch.setattr(main, "stored_setting", lambda key: {
+        "google_client_id": "client-id", "google_client_secret": "client-secret"}.get(key))
+    verifier = "p" * 64
+    monkeypatch.setattr(main, "oauth_authorization_url",
+                        lambda client_id, client_secret, redirect_uri, state:
+                        (f"https://accounts.google.com/o/oauth2/auth?state={state}", verifier))
+    captured = {}
+    creds_json = json.dumps({"token": "access", "refresh_token": "refresh",
+                             "token_uri": "https://oauth2.googleapis.com/token",
+                             "client_id": "client-id", "client_secret": "client-secret",
+                             "scopes": [YOUTUBE_SCOPE]})
+    def exchange(client_id, client_secret, redirect_uri, state, callback_url, code_verifier):
+        captured["verifier"] = code_verifier
+        return creds_json
+    monkeypatch.setattr(main, "oauth_exchange", exchange)
+    login_page = client.get("/login")
+    import re
+    csrf = re.search(r'name="csrf" value="([^\"]+)"', login_page.text).group(1)
+    client.post("/login", data={"username": "admin", "password": "Test-Only-Password-8Dq!x9", "csrf": csrf})
+    settings_page = client.get("/settings")
+    csrf = re.search(r'name="csrf" value="([^\"]+)"', settings_page.text).group(1)
+    started = client.post("/oauth/start", data={"csrf": csrf}, follow_redirects=False)
+    assert started.status_code == 302
+    state = parse_qs(urlsplit(started.headers["location"]).query)["state"][0]
+    completed = client.get("/oauth/callback", params={"code": "auth-code", "state": state}, follow_redirects=False)
+    assert completed.status_code == 303
+    assert captured["verifier"] == verifier
+    assert db.one("SELECT id FROM oauth_tokens WHERE id=1") is not None
 
 
 def test_upload_range_parsing():
