@@ -9,6 +9,7 @@ User=yt-uploader
 Group=yt-uploader
 WorkingDirectory=/opt/yt-uploader
 EnvironmentFile=/etc/yt-uploader/yt-uploader.env
+Environment=OAUTHLIB_INSECURE_TRANSPORT=1
 ExecStart=/opt/yt-uploader/venv/bin/python -m app.run
 Restart=on-failure
 RestartSec=5
