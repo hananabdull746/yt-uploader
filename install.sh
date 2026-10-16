@@ -29,7 +29,7 @@ fi
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
-apt-get install -y python3 python3-venv python3-pip ca-certificates curl
+apt-get install -y python3 python3-venv python3-pip ca-certificates curl ffmpeg fonts-montserrat
 
 if ! getent group "$APP_GROUP" >/dev/null; then groupadd --system "$APP_GROUP"; fi
 if ! id "$APP_USER" >/dev/null 2>&1; then
