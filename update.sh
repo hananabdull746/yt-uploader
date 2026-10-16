@@ -10,6 +10,7 @@ SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INSTALL_DIR="/opt/yt-uploader"
 
 echo "==> Fetching and syncing latest code from GitHub..."
+git config --global --add safe.directory "$SOURCE_DIR" || true
 git -C "$SOURCE_DIR" fetch origin main
 git -C "$SOURCE_DIR" reset --hard origin/main
 
@@ -30,6 +31,10 @@ fi
 echo "==> Updating file permissions..."
 chown -R root:root "$INSTALL_DIR"
 chmod -R u=rwX,go=rX "$INSTALL_DIR"
+
+if [[ -n "${SUDO_USER:-}" ]]; then
+  chown -R "$SUDO_USER:$SUDO_USER" "$SOURCE_DIR" || true
+fi
 
 echo "==> Restarting yt-uploader service..."
 systemctl daemon-reload
