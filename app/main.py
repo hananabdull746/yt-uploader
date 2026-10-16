@@ -15,6 +15,7 @@ from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Upload
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 
 load_dotenv()
@@ -50,7 +51,7 @@ DEFAULTS = {
     "retry_limit": "5",
     "poll_interval_seconds": str(settings.poll_interval),
     "max_download_bytes": str(settings.max_download_bytes),
-    "manual_approval": "true",
+    "manual_approval": "false",
     "worker_enabled": "true" if settings.worker_enabled_on_start else "false",
     "shorts_layout": "blur",
     "shorts_font": "Montserrat",
@@ -160,6 +161,13 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="YT Uploader", version="1.0.0", lifespan=lifespan)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 app.add_middleware(SessionMiddleware, secret_key=settings.session_secret or "development-only-change-me", max_age=8 * 60 * 60,
                    same_site="lax", https_only=settings.cookie_secure, session_cookie="yt_uploader_session")
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")

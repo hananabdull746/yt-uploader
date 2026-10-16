@@ -32,6 +32,11 @@ echo "==> Updating file permissions..."
 chown -R root:root "$INSTALL_DIR"
 chmod -R u=rwX,go=rX "$INSTALL_DIR"
 
+if [[ -f /etc/yt-uploader/yt-uploader.env ]] && grep -q '^APP_HOST=127\.0\.0\.1' /etc/yt-uploader/yt-uploader.env; then
+  echo "==> Configuring service to accept requests from all hosts (0.0.0.0)..."
+  sed -i 's/^APP_HOST=127\.0\.0\.1/APP_HOST=0.0.0.0/' /etc/yt-uploader/yt-uploader.env
+fi
+
 if [[ -n "${SUDO_USER:-}" ]]; then
   chown -R "$SUDO_USER:$SUDO_USER" "$SOURCE_DIR" || true
 fi

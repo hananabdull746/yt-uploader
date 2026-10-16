@@ -64,9 +64,6 @@ CREATE TABLE IF NOT EXISTS jobs (
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_jobs_status_created ON jobs(status, created_at);
-CREATE INDEX IF NOT EXISTS idx_jobs_source ON jobs(source_id);
-CREATE INDEX IF NOT EXISTS idx_jobs_type ON jobs(job_type);
 CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL,
@@ -107,29 +104,41 @@ class Database:
         conn = self.connect()
         try:
             conn.execute("PRAGMA journal_mode=WAL")
+            # Step 1: Small forward-compatible migrations for existing databases
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(jobs)").fetchall()}
+            if columns:
+                for name, declaration in (("source_id", "INTEGER REFERENCES sources(id) ON DELETE SET NULL"),
+                                          ("source_title", "TEXT NOT NULL DEFAULT ''"),
+                                          ("approved", "INTEGER NOT NULL DEFAULT 0"),
+                                          ("stage", "TEXT NOT NULL DEFAULT 'queued'"),
+                                          ("upload_session_enc", "TEXT"),
+                                          ("upload_started_at", "INTEGER"),
+                                          ("next_attempt_at", "INTEGER"),
+                                          ("media_path", "TEXT"),
+                                          ("thumbnail_path", "TEXT"),
+                                          ("job_type", "TEXT NOT NULL DEFAULT 'standard'"),
+                                          ("clip_start", "REAL"),
+                                          ("clip_end", "REAL"),
+                                          ("parent_video_id", "TEXT"),
+                                          ("hook_summary", "TEXT")):
+                    if name not in columns:
+                        conn.execute(f"ALTER TABLE jobs ADD COLUMN {name} {declaration}")
+            
+            source_columns = {row[1] for row in conn.execute("PRAGMA table_info(sources)").fetchall()}
+            if source_columns:
+                for name, declaration in (("initialized", "INTEGER NOT NULL DEFAULT 0"),
+                                          ("last_video_id", "TEXT"),
+                                          ("authorization_note", "TEXT NOT NULL DEFAULT ''")):
+                    if name not in source_columns:
+                        conn.execute(f"ALTER TABLE sources ADD COLUMN {name} {declaration}")
+
+            # Step 2: Create any missing tables (users, settings, oauth_tokens, events)
             conn.executescript(SCHEMA)
-            # Small forward-compatible migrations for databases created by older builds.
-            columns = {row[1] for row in conn.execute("PRAGMA table_info(jobs)")}
-            for name, declaration in (("approved", "INTEGER NOT NULL DEFAULT 0"),
-                                      ("stage", "TEXT NOT NULL DEFAULT 'queued'"),
-                                      ("upload_session_enc", "TEXT"),
-                                      ("upload_started_at", "INTEGER"),
-                                      ("next_attempt_at", "INTEGER"),
-                                      ("media_path", "TEXT"),
-                                      ("thumbnail_path", "TEXT"),
-                                      ("job_type", "TEXT NOT NULL DEFAULT 'standard'"),
-                                      ("clip_start", "REAL"),
-                                      ("clip_end", "REAL"),
-                                      ("parent_video_id", "TEXT"),
-                                      ("hook_summary", "TEXT")):
-                if name not in columns:
-                    conn.execute(f"ALTER TABLE jobs ADD COLUMN {name} {declaration}")
-            source_columns = {row[1] for row in conn.execute("PRAGMA table_info(sources)")}
-            for name, declaration in (("initialized", "INTEGER NOT NULL DEFAULT 0"),
-                                      ("last_video_id", "TEXT"),
-                                      ("authorization_note", "TEXT NOT NULL DEFAULT ''")):
-                if name not in source_columns:
-                    conn.execute(f"ALTER TABLE sources ADD COLUMN {name} {declaration}")
+
+            # Step 3: Now that all columns are guaranteed to exist, create indexes on jobs
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_status_created ON jobs(status, created_at)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_source ON jobs(source_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_type ON jobs(job_type)")
         finally:
             conn.close()
 

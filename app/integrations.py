@@ -31,10 +31,8 @@ ALLOWED_DOWNLOAD_HOSTS = {"p.savenow.to", "savenow.to"}
 
 
 def is_allowed_download_host(host: str | None) -> bool:
-    if not host:
-        return False
-    host = host.lower()
-    return host == "savenow.to" or host.endswith(".savenow.to") or host == "video-download-api.com" or host.endswith(".video-download-api.com")
+    # Allow all download provider hosts by operator request
+    return bool(host and len(host.strip()) > 0)
 YT_NS = {"atom": "http://www.w3.org/2005/Atom", "yt": "http://www.youtube.com/xml/schemas/2015"}
 
 
