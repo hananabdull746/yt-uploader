@@ -50,5 +50,5 @@ if systemctl is-active --quiet yt-uploader.service; then
   echo "=========================================================="
 else
   echo "[WARNING] Service may not have started properly. Checking logs:"
-  systemctl status yt-uploader.service --no-pager
+  journalctl -u yt-uploader.service -n 35 --no-pager
 fi
