@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import secrets
 import time
 from contextlib import asynccontextmanager
@@ -50,6 +51,10 @@ DEFAULTS = {
     "max_download_bytes": str(settings.max_download_bytes),
     "manual_approval": "true",
     "worker_enabled": "true" if settings.worker_enabled_on_start else "false",
+    "shorts_layout": "blur",
+    "shorts_font": "Montserrat",
+    "shorts_caption_style": "hormozi_yellow",
+    "shorts_auto_repurpose": "false",
 }
 
 
@@ -78,11 +83,42 @@ def assert_csrf(request: Request, token: str | None) -> None:
         raise HTTPException(status_code=403, detail="Invalid or expired CSRF token. Reload the page and try again.")
 
 
-def require_login(request: Request) -> str:
+def get_current_user(request: Request) -> dict[str, Any]:
     username = request.session.get("user")
     if not username:
         raise HTTPException(status_code=303, headers={"Location": "/login"})
-    return str(username)
+    user = DB.get_user_by_username(str(username))
+    if user:
+        return user
+    if str(username) == settings.admin_username:
+        return {"id": 1, "username": settings.admin_username, "role": "admin"}
+    raise HTTPException(status_code=303, headers={"Location": "/login"})
+
+
+def require_login(request: Request) -> str:
+    user = get_current_user(request)
+    return str(user["username"])
+
+
+def require_admin(request: Request) -> dict[str, Any]:
+    user = get_current_user(request)
+    if user["role"] != "admin":
+        raise HTTPException(status_code=403, detail="Administrator permissions required to perform this action.")
+    return user
+
+
+def require_sync_access(request: Request) -> dict[str, Any]:
+    user = get_current_user(request)
+    if user["role"] not in ("admin", "both", "sync_only"):
+        raise HTTPException(status_code=403, detail="Your profile does not have access to Channel Sync.")
+    return user
+
+
+def require_shorts_access(request: Request) -> dict[str, Any]:
+    user = get_current_user(request)
+    if user["role"] not in ("admin", "both", "shorts_only"):
+        raise HTTPException(status_code=403, detail="Your profile does not have access to AI Shorts Studio.")
+    return user
 
 
 def setting_value(key: str, default: str) -> str:
@@ -100,11 +136,15 @@ def initialize() -> None:
         raise RuntimeError("Set ENCRYPTION_KEY (a Fernet key) before starting the app")
     if not DB.one("SELECT value FROM settings WHERE key='admin_password_hash'"):
         DB.set_setting("admin_password_hash", hash_password(settings.admin_password))
+    # Seed admin user into users table if not exists
+    admin_user = DB.get_user_by_username(settings.admin_username)
+    if not admin_user:
+        DB.create_user(settings.admin_username, hash_password(settings.admin_password), role="admin")
     for key, value in DEFAULTS.items():
         if DB.get_setting(key)[0] is None:
             DB.set_setting(key, value)
-    # Do not leave plaintext admin password in process-level settings after initialization.
     DB.event("Application initialized")
+
 
 
 @asynccontextmanager
@@ -151,16 +191,38 @@ def login(request: Request, username: str = Form(...), password: str = Form(...)
     ip = request.client.host if request.client else "unknown"
     if not login_allowed(ip):
         raise HTTPException(status_code=429, detail="Too many login attempts. Wait five minutes and try again.")
-    row = DB.one("SELECT value FROM settings WHERE key='admin_password_hash'")
-    correct = row and username == settings.admin_username and verify_password(password, row["value"])
+    
+    clean_user = username.strip()
+    user = DB.get_user_by_username(clean_user)
+    correct = False
+    role = "both"
+    user_id = 0
+
+    if user and verify_password(password, user["password_hash"]):
+        correct = True
+        role = user["role"]
+        user_id = user["id"]
+    elif clean_user == settings.admin_username:
+        row = DB.one("SELECT value FROM settings WHERE key='admin_password_hash'")
+        if row and verify_password(password, row["value"]):
+            correct = True
+            role = "admin"
+            user_id = 1
+
     if not correct:
         record_login_failure(ip)
         return RedirectResponse("/login?error=Invalid%20username%20or%20password", status_code=303)
+
     clear_login_failures(ip)
     request.session.clear()
-    request.session["user"] = username
+    request.session["user"] = clean_user
+    request.session["user_id"] = user_id
+    request.session["role"] = role
     request.session["csrf"] = new_csrf_token()
-    DB.event("Administrator signed in")
+    DB.event(f"User '{clean_user}' ({role}) signed in")
+
+    if role == "shorts_only":
+        return RedirectResponse("/shorts", status_code=303)
     return RedirectResponse("/", status_code=303)
 
 
@@ -172,20 +234,55 @@ def logout(request: Request, csrf: str = Form(...), username: str = Depends(requ
 
 
 def render_page(request: Request, page: str, message: str | None = None, error: str | None = None):
-    username = require_login(request)
+    user = get_current_user(request)
+    username = user["username"]
+    role = user["role"]
+    is_admin = (role == "admin")
+    can_sync = role in ("admin", "both", "sync_only")
+    can_shorts = role in ("admin", "both", "shorts_only")
+
+    # Access enforcement per workspace
+    if page in ("overview", "sources") and not can_sync:
+        return RedirectResponse("/shorts", status_code=303)
+    if page == "shorts" and not can_shorts:
+        return RedirectResponse("/", status_code=303)
+    if page == "settings" and not is_admin:
+        return RedirectResponse("/?error=Only%20administrators%20can%20access%20settings", status_code=303)
+
     message = message or request.query_params.get("message")
     error = error or request.query_params.get("error")
     csrf = ensure_csrf(request)
+
     counts = {row["status"]: row["n"] for row in DB.all("SELECT status,COUNT(*) n FROM jobs GROUP BY status")}
+    shorts_counts = {row["status"]: row["n"] for row in DB.all("SELECT status,COUNT(*) n FROM jobs WHERE job_type='short' GROUP BY status")}
+
+    all_jobs = DB.all(
+        "SELECT j.*,COALESCE(s.title,j.source_title,j.source_channel_id) AS channel_title "
+        "FROM jobs j LEFT JOIN sources s ON s.id=j.source_id ORDER BY j.created_at DESC LIMIT 200"
+    )
+    standard_jobs = [j for j in all_jobs if j.get("job_type") != "short"]
+    shorts_jobs = [j for j in all_jobs if j.get("job_type") == "short"]
+
     data = {
-        "request": request, "page": page, "username": username, "csrf": csrf, "message": message, "error": error,
-        "sources": DB.all("SELECT * FROM sources ORDER BY created_at DESC"),
-        "jobs": DB.all("SELECT j.*,COALESCE(s.title,j.source_title,j.source_channel_id) AS channel_title FROM jobs j LEFT JOIN sources s ON s.id=j.source_id ORDER BY j.created_at DESC LIMIT 200"),
+        "request": request, "page": page, "username": username, "user_role": role,
+        "is_admin": is_admin, "can_sync": can_sync, "can_shorts": can_shorts,
+        "csrf": csrf, "message": message, "error": error,
+        "sources": DB.all("SELECT * FROM sources ORDER BY created_at DESC") if can_sync else [],
+        "jobs": all_jobs,
+        "standard_jobs": standard_jobs,
+        "shorts_jobs": shorts_jobs,
         "events": DB.all("SELECT * FROM events ORDER BY created_at DESC LIMIT 100"),
-        "counts": counts, "source_count": len(DB.all("SELECT id FROM sources")),
+        "counts": counts,
+        "shorts_counts": shorts_counts,
+        "source_count": len(DB.all("SELECT id FROM sources")),
         "worker_enabled": WORKER.enabled(), "worker_heartbeat": WORKER.last_heartbeat,
-        "db_path": str(settings.database_path), "configured_download_key": public_setting("download_api_key"),
-        "configured_google_id": public_setting("google_client_id"), "configured_google_secret": public_setting("google_client_secret"),
+        "db_path": str(settings.database_path),
+        "configured_download_key": public_setting("download_api_key"),
+        "configured_google_id": public_setting("google_client_id"),
+        "configured_google_secret": public_setting("google_client_secret"),
+        "configured_deepgram_key": public_setting("deepgram_api_key"),
+        "configured_groq_key": public_setting("groq_api_key"),
+        "configured_gemini_key": public_setting("gemini_api_key"),
         "oauth_connected": bool(DB.one("SELECT id FROM oauth_tokens WHERE id=1")),
         "oauth_redirect_uri": settings.oauth_redirect_uri,
         "privacy_status": setting_value("privacy_status", "private"),
@@ -198,6 +295,11 @@ def render_page(request: Request, page: str, message: str | None = None, error: 
         "poll_interval_seconds": setting_value("poll_interval_seconds", str(settings.poll_interval)),
         "max_download_mb": int(setting_value("max_download_bytes", str(settings.max_download_bytes))) // (1024 * 1024),
         "manual_approval": setting_value("manual_approval", "true") == "true",
+        "shorts_layout": setting_value("shorts_layout", "blur"),
+        "shorts_font": setting_value("shorts_font", "Montserrat"),
+        "shorts_caption_style": setting_value("shorts_caption_style", "hormozi_yellow"),
+        "shorts_auto_repurpose": setting_value("shorts_auto_repurpose", "false") == "true",
+        "users": DB.get_all_users() if is_admin else [],
         "source_authorization_required": True,
     }
     return templates.TemplateResponse(request, "dashboard.html", data)
@@ -206,6 +308,11 @@ def render_page(request: Request, page: str, message: str | None = None, error: 
 @app.get("/", response_class=HTMLResponse)
 def overview(request: Request):
     return render_page(request, "overview")
+
+
+@app.get("/shorts", response_class=HTMLResponse)
+def shorts_studio_page(request: Request):
+    return render_page(request, "shorts")
 
 
 @app.get("/sources", response_class=HTMLResponse)
@@ -366,12 +473,102 @@ def reconcile_job(job_id: int, request: Request, decision: str = Form(...), dest
     return RedirectResponse("/queue", status_code=303)
 
 
+@app.post("/shorts/create")
+def create_short_from_url(request: Request, url: str = Form(...), confirm_rights: str | None = Form(None),
+                          csrf: str = Form(...), user: dict = Depends(require_shorts_access)):
+    assert_csrf(request, csrf)
+    if confirm_rights != "yes":
+        return RedirectResponse("/shorts?error=Please%20confirm%20authorization%20before%20creating%20Shorts", status_code=303)
+
+    clean_url = url.strip()
+    vid_match = re.search(r"(?:v=|\/|be\/)([0-9A-Za-z_-]{11})", clean_url)
+    video_id = vid_match.group(1) if vid_match else f"vid_{int(time.time())}"
+    short_vid_id = f"{video_id}_short_{int(time.time())}"
+    now = int(time.time())
+
+    DB.execute(
+        "INSERT INTO jobs(source_channel_id, source_title, video_id, source_url, title, status, approved, job_type, parent_video_id, created_at, updated_at) "
+        "VALUES(?,?,?,?,?,'queued',1,'short',?,?,?)",
+        ("manual_short", "AI Shorts Studio", short_vid_id, clean_url, f"Short from {video_id}", video_id, now, now)
+    )
+    DB.event(f"New Short job enqueued by {user['username']} for {clean_url}")
+    return RedirectResponse("/shorts?message=Video%20queued%20for%20AI%20Short%20generation", status_code=303)
+
+
+@app.post("/jobs/{job_id}/repurpose")
+def repurpose_job(job_id: int, request: Request, csrf: str = Form(...), user: dict = Depends(require_shorts_access)):
+    assert_csrf(request, csrf)
+    job = DB.one("SELECT * FROM jobs WHERE id=?", (job_id,))
+    if not job:
+        return RedirectResponse("/queue?error=Job%20not%20found", status_code=303)
+
+    now = int(time.time())
+    short_vid_id = f"{job['video_id']}_short_{int(time.time())}"
+    DB.execute(
+        "INSERT INTO jobs(source_id, source_channel_id, source_title, video_id, source_url, title, status, approved, job_type, parent_video_id, created_at, updated_at) "
+        "VALUES(?,?,?,?,?,'queued',1,'short',?,?,?)",
+        (job.get("source_id"), job.get("source_channel_id"), job.get("source_title", ""),
+         short_vid_id, job["source_url"], f"[Short] {job['title']}", job["video_id"], now, now)
+    )
+    DB.event(f"Job {job_id} repurposed to Short by {user['username']}")
+    return RedirectResponse("/shorts?message=Video%20queued%20for%20Shorts%20repurposing", status_code=303)
+
+
+@app.post("/users/create")
+def create_user_endpoint(request: Request, username: str = Form(...), password: str = Form(...),
+                         role: str = Form("both"), csrf: str = Form(...), admin: dict = Depends(require_admin)):
+    assert_csrf(request, csrf)
+    if len(password) < 8:
+        return RedirectResponse("/settings?error=Password%20must%20be%20at%20least%208%20characters", status_code=303)
+    if role not in ("admin", "both", "shorts_only", "sync_only"):
+        role = "both"
+    clean_name = username.strip()
+    if not clean_name:
+        return RedirectResponse("/settings?error=Username%20cannot%20be%20blank", status_code=303)
+    existing = DB.get_user_by_username(clean_name)
+    if existing:
+        return RedirectResponse("/settings?error=Username%20already%20exists", status_code=303)
+    DB.create_user(clean_name, hash_password(password), role)
+    DB.event(f"User '{clean_name}' created with role '{role}' by administrator")
+    return RedirectResponse("/settings?message=User%20profile%20created%20successfully", status_code=303)
+
+
+@app.post("/users/{user_id}/delete")
+def delete_user_endpoint(user_id: int, request: Request, csrf: str = Form(...), admin: dict = Depends(require_admin)):
+    assert_csrf(request, csrf)
+    target = DB.get_user_by_id(user_id)
+    if not target:
+        return RedirectResponse("/settings?error=User%20not%20found", status_code=303)
+    if target["username"] == settings.admin_username or target["id"] == admin.get("id"):
+        return RedirectResponse("/settings?error=Cannot%20delete%20primary%20administrator", status_code=303)
+    DB.delete_user(user_id)
+    DB.event(f"User '{target['username']}' deleted by administrator")
+    return RedirectResponse("/settings?message=User%20deleted%20successfully", status_code=303)
+
+
+@app.post("/users/{user_id}/password")
+def reset_user_password(user_id: int, request: Request, new_password: str = Form(...),
+                        csrf: str = Form(...), admin: dict = Depends(require_admin)):
+    assert_csrf(request, csrf)
+    if len(new_password) < 8:
+        return RedirectResponse("/settings?error=Password%20must%20be%20at%20least%208%20characters", status_code=303)
+    target = DB.get_user_by_id(user_id)
+    if not target:
+        return RedirectResponse("/settings?error=User%20not%20found", status_code=303)
+    DB.update_user_password(user_id, hash_password(new_password))
+    DB.event(f"Password reset for user '{target['username']}' by administrator")
+    return RedirectResponse("/settings?message=Password%20updated%20successfully", status_code=303)
+
+
 @app.post("/settings")
 def save_settings(request: Request, csrf: str = Form(...), privacy_status: str = Form("private"), category_id: str = Form("22"),
                   description_prefix: str = Form(""), source_attribution: str = Form(""), upload_tags: str = Form(""),
                   retry_limit: int = Form(5), poll_interval_seconds: int = Form(300), max_download_mb: int = Form(4096),
                   manual_approval: str | None = Form(None), download_api_key: str = Form(""), google_client_id: str = Form(""),
-                  google_client_secret: str = Form(""), username: str = Depends(require_login)):
+                  google_client_secret: str = Form(""), deepgram_api_key: str = Form(""), groq_api_key: str = Form(""),
+                  gemini_api_key: str = Form(""), shorts_layout: str = Form("blur"), shorts_font: str = Form("Montserrat"),
+                  shorts_caption_style: str = Form("hormozi_yellow"), shorts_auto_repurpose: str | None = Form(None),
+                  admin: dict = Depends(require_admin)):
     assert_csrf(request, csrf)
     if privacy_status not in {"private", "unlisted", "public"}:
         raise HTTPException(422, "Invalid visibility")
@@ -381,18 +578,35 @@ def save_settings(request: Request, csrf: str = Form(...), privacy_status: str =
         tags = [tag.strip()[:100] for tag in upload_tags.split(",") if tag.strip()][:30]
     except Exception:
         tags = []
-    safe_values = {"privacy_status": privacy_status, "category_id": category_id[:8], "description_prefix": description_prefix[:1000],
-                   "source_attribution": source_attribution[:300], "upload_tags": json.dumps(tags), "retry_limit": str(retry_limit),
-                   "poll_interval_seconds": str(poll_interval_seconds), "max_download_bytes": str(max_download_mb * 1024 * 1024),
-                   "manual_approval": "true" if manual_approval else "false"}
+    safe_values = {
+        "privacy_status": privacy_status,
+        "category_id": category_id[:8],
+        "description_prefix": description_prefix[:1000],
+        "source_attribution": source_attribution[:300],
+        "upload_tags": json.dumps(tags),
+        "retry_limit": str(retry_limit),
+        "poll_interval_seconds": str(poll_interval_seconds),
+        "max_download_bytes": str(max_download_mb * 1024 * 1024),
+        "manual_approval": "true" if manual_approval else "false",
+        "shorts_layout": shorts_layout if shorts_layout in ("blur", "crop") else "blur",
+        "shorts_font": shorts_font if shorts_font in ("Montserrat", "Anton", "Impact") else "Montserrat",
+        "shorts_caption_style": shorts_caption_style if shorts_caption_style in ("hormozi_yellow", "viral_mint", "neon_cyan") else "hormozi_yellow",
+        "shorts_auto_repurpose": "true" if shorts_auto_repurpose else "false",
+    }
     for key, value in safe_values.items():
         DB.set_setting(key, value)
-    for key, value in (("download_api_key", download_api_key.strip()), ("google_client_secret", google_client_secret.strip())):
+    for key, value in (
+        ("download_api_key", download_api_key.strip()),
+        ("google_client_secret", google_client_secret.strip()),
+        ("deepgram_api_key", deepgram_api_key.strip()),
+        ("groq_api_key", groq_api_key.strip()),
+        ("gemini_api_key", gemini_api_key.strip()),
+    ):
         if value:
             DB.set_setting(key, encrypt_secret(value), is_secret=True)
     if google_client_id.strip():
         DB.set_setting("google_client_id", google_client_id.strip()[:500])
-    DB.event("Application settings updated")
+    DB.event("Application settings and AI keys updated")
     return RedirectResponse("/settings?message=Settings%20saved.%20Secrets%20are%20stored%20encrypted%20and%20are%20not%20shown%20again", status_code=303)
 
 

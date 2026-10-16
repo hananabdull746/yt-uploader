@@ -1464,6 +1464,96 @@ code {
   }
 }
 
+/* ==========================================================================
+   2-App Workspace Switcher & Multi-Profile Styles
+   ========================================================================== */
+.workspace-switcher {
+  display: inline-flex;
+  align-items: center;
+  background: #0b0f16;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 3px;
+  gap: 4px;
+}
+
+.ws-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--muted);
+  transition: all var(--transition);
+}
+
+.ws-btn:hover {
+  color: var(--text);
+  background: var(--panel-2);
+}
+
+.ws-btn.active {
+  background: rgba(16, 185, 129, 0.15);
+  color: var(--accent-light);
+  border: 1px solid rgba(16, 185, 129, 0.35);
+  font-weight: 600;
+}
+
+.ws-badge {
+  font-size: 9px;
+  font-family: 'DM Mono', monospace;
+  font-weight: 700;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: var(--accent);
+  color: #041b12;
+}
+
+.role-badge {
+  display: inline-flex;
+  align-items: center;
+  font-size: 9.5px;
+  font-family: 'DM Mono', monospace;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 4px;
+  margin-left: 6px;
+  text-transform: uppercase;
+}
+
+.role-badge.role-admin { background: rgba(245, 158, 11, 0.18); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.35); }
+.role-badge.role-both { background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.3); }
+.role-badge.role-shorts_only { background: rgba(59, 130, 246, 0.15); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.3); }
+.role-badge.role-sync_only { background: rgba(148, 163, 184, 0.15); color: #94a3b8; border: 1px solid rgba(148, 163, 184, 0.3); }
+
+.thumb-container.short-aspect {
+  width: 58px;
+  height: 96px;
+  aspect-ratio: 9 / 16;
+}
+
+.hook-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: #fcd34d;
+  background: rgba(245, 158, 11, 0.08);
+  border: 1px solid rgba(245, 158, 11, 0.2);
+  padding: 3px 8px;
+  border-radius: 5px;
+  margin-top: 4px;
+  max-width: 440px;
+}
+
+.hero-shorts-panel {
+  background: linear-gradient(135deg, rgba(16, 185, 129, 0.06) 0%, rgba(17, 22, 32, 1) 100%);
+  border: 1px solid rgba(16, 185, 129, 0.3);
+  box-shadow: 0 4px 24px rgba(16, 185, 129, 0.08);
+}
+
 @media (max-width: 640px) {
   .topbar {
     height: 60px;

@@ -14,9 +14,24 @@
     </span>
     <div>
       <strong>YT Uploader</strong>
-      <small>Self-hosted publishing console</small>
+      <small>Self-hosted publishing engine</small>
     </div>
   </div>
+
+  {% if can_sync and can_shorts %}
+    <div class="workspace-switcher" title="Switch active workspace">
+      <a href="/" class="ws-btn {{ 'active' if page in ['overview', 'sources', 'queue'] else '' }}">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="20" height="20" rx="2.18" ry="2.18"></rect><line x1="7" y1="2" x2="7" y2="22"></line><line x1="17" y1="2" x2="17" y2="22"></line><line x1="2" y1="12" x2="22" y2="12"></line><line x1="2" y1="7" x2="7" y2="7"></line><line x1="2" y1="17" x2="7" y2="17"></line><line x1="17" y1="17" x2="22" y2="17"></line><line x1="17" y1="7" x2="22" y2="7"></line></svg>
+        <span>Channel Sync</span>
+      </a>
+      <a href="/shorts" class="ws-btn {{ 'active' if page=='shorts' else '' }}">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="2" width="14" height="20" rx="3"></rect><line x1="12" y1="18" x2="12.01" y2="18"></line></svg>
+        <span>AI Shorts Studio</span>
+        <span class="ws-badge">AI</span>
+      </a>
+    </div>
+  {% endif %}
+
   <div class="top-actions">
     <div class="auto-refresh-wrap" id="autoRefreshControl" title="Auto-refresh status and interval">
       <span class="refresh-indicator" id="refreshDot"></span>
@@ -32,7 +47,10 @@
       <span class="status-indicator"></span>
       {{ 'Automation on' if worker_enabled else 'Automation paused' }}
     </span>
-    <span class="user">{{ username }}</span>
+    <span class="user">
+      {{ username }}
+      <span class="role-badge role-{{ user_role }}">{{ user_role|replace('_', ' ')|title }}</span>
+    </span>
     <form method="post" action="/logout">
       <input type="hidden" name="csrf" value="{{ csrf }}">
       <button class="button subtle tiny" type="submit">Sign out</button>
@@ -43,25 +61,40 @@
 <div class="layout">
   <aside class="sidebar">
     <nav>
-      <a class="{{ 'active' if page=='overview' else '' }}" href="/">
-        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect></svg>
-        <span>Overview</span>
-      </a>
-      <a class="{{ 'active' if page=='sources' else '' }}" href="/sources">
-        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 11a9 9 0 0 1 9 9"></path><path d="M4 4a16 16 0 0 1 16 16"></path><circle cx="5" cy="19" r="1"></circle></svg>
-        <span>Sources</span>
-        {% if source_count %}<span class="nav-badge">{{ source_count }}</span>{% endif %}
-      </a>
-      <a class="{{ 'active' if page=='queue' else '' }}" href="/queue">
-        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 16 12 14 15 10 15 8 12 2 12"></polyline><path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"></path></svg>
-        <span>Upload queue</span>
-        {% set pending_total = counts.get('queued',0) + counts.get('downloading',0) + counts.get('uploading',0) %}
-        {% if pending_total > 0 %}<span class="nav-badge highlight">{{ pending_total }}</span>{% endif %}
-      </a>
-      <a class="{{ 'active' if page=='settings' else '' }}" href="/settings">
-        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
-        <span>Settings</span>
-      </a>
+      {% if can_sync %}
+        <a class="{{ 'active' if page=='overview' else '' }}" href="/">
+          <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect></svg>
+          <span>Overview</span>
+        </a>
+        <a class="{{ 'active' if page=='sources' else '' }}" href="/sources">
+          <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 11a9 9 0 0 1 9 9"></path><path d="M4 4a16 16 0 0 1 16 16"></path><circle cx="5" cy="19" r="1"></circle></svg>
+          <span>Sources</span>
+          {% if source_count %}<span class="nav-badge">{{ source_count }}</span>{% endif %}
+        </a>
+        <a class="{{ 'active' if page=='queue' else '' }}" href="/queue">
+          <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 16 12 14 15 10 15 8 12 2 12"></polyline><path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"></path></svg>
+          <span>Upload queue</span>
+          {% set pending_total = counts.get('queued',0) + counts.get('downloading',0) + counts.get('uploading',0) %}
+          {% if pending_total > 0 %}<span class="nav-badge highlight">{{ pending_total }}</span>{% endif %}
+        </a>
+      {% endif %}
+
+      {% if can_shorts %}
+        <a class="{{ 'active' if page=='shorts' else '' }}" href="/shorts">
+          <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="2" width="14" height="20" rx="3"></rect><line x1="12" y1="18" x2="12.01" y2="18"></line></svg>
+          <span>AI Shorts Studio</span>
+          {% set shorts_pending = shorts_counts.get('queued',0) + shorts_counts.get('downloading',0) + shorts_counts.get('uploading',0) %}
+          {% if shorts_pending > 0 %}<span class="nav-badge highlight">{{ shorts_pending }}</span>{% endif %}
+        </a>
+      {% endif %}
+
+      {% if is_admin %}
+        <a class="{{ 'active' if page=='settings' else '' }}" href="/settings">
+          <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+          <span>Settings & Users</span>
+        </a>
+      {% endif %}
+
       <a class="{{ 'active' if page=='logs' else '' }}" href="/logs">
         <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"></line><line x1="8" y1="12" x2="21" y2="12"></line><line x1="8" y1="18" x2="21" y2="18"></line><line x1="3" y1="6" x2="3.01" y2="6"></line><line x1="3" y1="12" x2="3.01" y2="12"></line><line x1="3" y1="18" x2="3.01" y2="18"></line></svg>
         <span>Event log</span>
@@ -72,7 +105,7 @@
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg>
         <b>Rights First</b>
       </div>
-      <p>Only process videos you own or are expressly authorized to redistribute. A public URL is not proof of permission.</p>
+      <p>Only process videos you own or are authorized to redistribute. A public URL is not proof of permission.</p>
     </div>
     <div class="sidebar-foot">
       <span>Local service</span>
@@ -100,7 +133,7 @@
         <div>
           <p class="eyebrow">OPERATIONS</p>
           <h1>Overview</h1>
-          <p class="muted-text">Monitor source discovery, worker operations, and publishing pipeline.</p>
+          <p class="muted-text">Monitor channel discovery, worker operations, and publishing pipeline.</p>
         </div>
         <div class="button-row">
           <form method="post" action="/poll">
@@ -110,18 +143,20 @@
               Poll sources now
             </button>
           </form>
-          <form method="post" action="/worker/toggle">
-            <input type="hidden" name="csrf" value="{{ csrf }}">
-            <button class="button {{ 'danger-button' if worker_enabled else 'primary' }}" type="submit">
-              {% if worker_enabled %}
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="4" width="4" height="16"></rect><rect x="14" y="4" width="4" height="16"></rect></svg>
-                Pause automation
-              {% else %}
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
-                Resume automation
-              {% endif %}
-            </button>
-          </form>
+          {% if is_admin %}
+            <form method="post" action="/worker/toggle">
+              <input type="hidden" name="csrf" value="{{ csrf }}">
+              <button class="button {{ 'danger-button' if worker_enabled else 'primary' }}" type="submit">
+                {% if worker_enabled %}
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="4" width="4" height="16"></rect><rect x="14" y="4" width="4" height="16"></rect></svg>
+                  Pause automation
+                {% else %}
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+                  Resume automation
+                {% endif %}
+              </button>
+            </form>
+          {% endif %}
         </div>
       </div>
 
@@ -134,7 +169,7 @@
         <div class="stat stat-awaiting">
           <span>Awaiting approval</span>
           <strong>{{ counts.get('queued',0) }}</strong>
-          <small>Requires explicit authorization</small>
+          <small>Requires authorization</small>
         </div>
         <div class="stat stat-active">
           <span>In progress</span>
@@ -144,12 +179,12 @@
         <div class="stat stat-completed">
           <span>Completed</span>
           <strong>{{ counts.get('completed',0) }}</strong>
-          <small>Published destination IDs</small>
+          <small>Published IDs</small>
         </div>
         <div class="stat stat-review">
           <span>Needs review</span>
           <strong>{{ counts.get('needs_review',0) }}</strong>
-          <small>Uncertain upload outcome</small>
+          <small>Uncertain outcome</small>
         </div>
         <div class="stat stat-failed">
           <span>Failed / Errors</span>
@@ -200,7 +235,7 @@
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"></polyline></svg>
           </a>
         </div>
-        {% if jobs %}
+        {% if standard_jobs %}
           <div class="table-wrap">
             <table>
               <thead>
@@ -212,7 +247,7 @@
                 </tr>
               </thead>
               <tbody>
-                {% for job in jobs[:8] %}
+                {% for job in standard_jobs[:8] %}
                   <tr>
                     <td>
                       <div class="video-item-cell">
@@ -258,10 +293,6 @@
                       <span class="pill status-{{ job.status }}">
                         {{ 'Approval needed' if job.status=='queued' and not job.approved else job.status|replace('_',' ')|title }}
                       </span>
-                      {% if job.status in ['downloading', 'uploading'] %}
-                        <div class="progress"><span style="width:{{ job.progress }}%"></span></div>
-                        <small class="cell-sub">{{ job.stage|title }} · {{ job.progress }}%</small>
-                      {% endif %}
                     </td>
                     <td>{{ job.updated_at|int|timestamp }}</td>
                   </tr>
@@ -271,6 +302,183 @@
           </div>
         {% else %}
           <div class="empty">No video jobs yet. Add an authorized source channel to establish its baseline.</div>
+        {% endif %}
+      </section>
+
+    {% elif page=='shorts' %}
+      <div class="page-head">
+        <div>
+          <p class="eyebrow">CREATIVE AI</p>
+          <h1>AI Shorts Studio</h1>
+          <p class="muted-text">Transform long videos into 9:16 viral Shorts with kinetic subtitles and AI hook detection.</p>
+        </div>
+      </div>
+
+      <section class="panel hero-shorts-panel">
+        <div class="panel-head">
+          <div>
+            <h2>Generate Short from YouTube URL</h2>
+            <p class="muted-text">3-part split transcript analysis · Deepgram Nova-2 · Groq Llama 3.3 · Zero-crash 1 GB VPS render</p>
+          </div>
+        </div>
+        <form method="post" action="/shorts/create" class="form-grid">
+          <input type="hidden" name="csrf" value="{{ csrf }}">
+          <label class="wide">
+            YouTube Video URL
+            <input name="url" placeholder="https://www.youtube.com/watch?v=... or https://youtu.be/..." required>
+          </label>
+          <label class="checkline wide">
+            <input type="checkbox" name="confirm_rights" value="yes" required>
+            <span>I own this content or have documented permission to repurpose and publish this video as a Short.</span>
+          </label>
+          <div class="wide">
+            <button class="button primary" type="submit">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+              Analyze & Generate 9:16 Short
+            </button>
+            <span class="help inline-help">AI isolates the most viral 30–58s section, applies kinetic word-pop subtitles, and queues it for your approval.</span>
+          </div>
+        </form>
+      </section>
+
+      <div class="stats-grid">
+        <div class="stat">
+          <span>Total Shorts</span>
+          <strong>{{ shorts_jobs|length }}</strong>
+          <small>AI generated</small>
+        </div>
+        <div class="stat stat-awaiting">
+          <span>Awaiting approval</span>
+          <strong>{{ shorts_counts.get('queued',0) }}</strong>
+          <small>Ready for review</small>
+        </div>
+        <div class="stat stat-active">
+          <span>Rendering / Uploading</span>
+          <strong>{{ shorts_counts.get('downloading',0) + shorts_counts.get('uploading',0) }}</strong>
+          <small>Active jobs</small>
+        </div>
+        <div class="stat stat-completed">
+          <span>Published Shorts</span>
+          <strong>{{ shorts_counts.get('completed',0) }}</strong>
+          <small>Destination IDs</small>
+        </div>
+        <div class="stat stat-review">
+          <span>Needs review</span>
+          <strong>{{ shorts_counts.get('needs_review',0) }}</strong>
+          <small>Reconciliation</small>
+        </div>
+        <div class="stat stat-failed">
+          <span>Failed / Skipped</span>
+          <strong>{{ shorts_counts.get('failed',0) + shorts_counts.get('skipped',0) }}</strong>
+          <small>Retries available</small>
+        </div>
+      </div>
+
+      <section class="panel">
+        <div class="panel-head">
+          <div>
+            <h2>Shorts Queue</h2>
+            <p class="muted-text">Vertical 9:16 clips generated from long videos.</p>
+          </div>
+        </div>
+
+        {% if shorts_jobs %}
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Short Preview & Hook</th>
+                  <th>Clip Window</th>
+                  <th>Status / Progress</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for job in shorts_jobs %}
+                  <tr class="job-row"
+                      data-status="{{ job.status }}"
+                      data-approved="{{ 'true' if job.approved else 'false' }}"
+                      data-title="{{ job.title|e }}"
+                      data-videoid="{{ job.video_id }}"
+                      data-ytid="{{ job.youtube_id or '' }}"
+                      data-channel="{{ job.channel_title|e }}">
+                    <td>
+                      <div class="video-item-cell">
+                        <div class="thumb-container short-aspect">
+                          <img src="https://i.ytimg.com/vi/{{ job.parent_video_id or job.video_id }}/mqdefault.jpg" alt="" class="video-thumb" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">
+                          <div class="thumb-fallback" style="display:none;">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+                          </div>
+                          <span class="thumb-badge-live">9:16 SHORT</span>
+                        </div>
+                        <div class="video-info">
+                          <a class="video-title" target="_blank" rel="noopener noreferrer" href="{{ job.source_url }}">
+                            {{ job.title }}
+                          </a>
+                          {% if job.hook_summary %}
+                            <div class="hook-badge">
+                              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg>
+                              <span>{{ job.hook_summary }}</span>
+                            </div>
+                          {% endif %}
+                          {% if job.youtube_id %}
+                            <div class="destination-row">
+                              <a class="dest-link" target="_blank" rel="noopener noreferrer" href="https://youtu.be/{{ job.youtube_id }}">
+                                <svg class="yt-icon" viewBox="0 0 24 24" fill="currentColor"><path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"/></svg>
+                                <span>youtu.be/{{ job.youtube_id }}</span>
+                              </a>
+                            </div>
+                          {% endif %}
+                        </div>
+                      </div>
+                    </td>
+                    <td>
+                      {% if job.clip_start is not none and job.clip_end is not none %}
+                        <span class="mono-badge">
+                          <code>{{ job.clip_start }}s → {{ job.clip_end }}s ({{ (job.clip_end - job.clip_start)|round(1) }}s)</code>
+                        </span>
+                      {% else %}
+                        <span class="cell-sub">AI analyzing audio...</span>
+                      {% endif %}
+                    </td>
+                    <td>
+                      <span class="pill status-{{ job.status }}">
+                        {{ 'Approval needed' if job.status=='queued' and not job.approved else job.status|replace('_',' ')|title }}
+                      </span>
+                      <div class="progress">
+                        <span style="width:{{ job.progress }}%"></span>
+                      </div>
+                      <small class="cell-sub">{{ job.stage|replace('_', ' ')|title }} · {{ job.progress }}%</small>
+                    </td>
+                    <td>
+                      <div class="inline-actions">
+                        {% if job.status in ['queued','retry'] and not job.approved %}
+                          <form method="post" action="/jobs/{{ job.id }}/approve">
+                            <input type="hidden" name="csrf" value="{{ csrf }}">
+                            <button class="button tiny primary" type="submit">Approve Short</button>
+                          </form>
+                        {% endif %}
+                        {% if job.status not in ['completed','uploading','skipped'] %}
+                          <form method="post" action="/jobs/{{ job.id }}/skip">
+                            <input type="hidden" name="csrf" value="{{ csrf }}">
+                            <button class="button tiny subtle" type="submit">Skip</button>
+                          </form>
+                        {% endif %}
+                        {% if job.status in ['failed','skipped'] %}
+                          <form method="post" action="/jobs/{{ job.id }}/retry">
+                            <input type="hidden" name="csrf" value="{{ csrf }}">
+                            <button class="button tiny secondary" type="submit">Retry</button>
+                          </form>
+                        {% endif %}
+                      </div>
+                    </td>
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        {% else %}
+          <div class="empty">No Shorts in the queue. Paste a YouTube URL above to generate your first 9:16 Short!</div>
         {% endif %}
       </section>
 
@@ -462,12 +670,14 @@
                       data-channel="{{ job.channel_title|e }}">
                     <td>
                       <div class="video-item-cell">
-                        <div class="thumb-container">
-                          <img src="https://i.ytimg.com/vi/{{ job.video_id }}/mqdefault.jpg" alt="" class="video-thumb" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">
+                        <div class="thumb-container {{ 'short-aspect' if job.job_type=='short' else '' }}">
+                          <img src="https://i.ytimg.com/vi/{{ job.parent_video_id or job.video_id }}/mqdefault.jpg" alt="" class="video-thumb" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">
                           <div class="thumb-fallback" style="display:none;">
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
                           </div>
-                          {% if job.stage and job.status in ['downloading', 'uploading'] %}
+                          {% if job.job_type == 'short' %}
+                            <span class="thumb-badge-live">SHORT</span>
+                          {% elif job.stage and job.status in ['downloading', 'uploading'] %}
                             <span class="thumb-badge-live">{{ job.stage }}</span>
                           {% endif %}
                         </div>
@@ -488,7 +698,7 @@
                           </div>
                           {% if job.youtube_id %}
                             <div class="destination-row">
-                              <a class="dest-link" target="_blank" rel="noopener noreferrer" href="https://youtu.be/{{ job.youtube_id }}" title="Open published video on YouTube">
+                              <a class="dest-link" target="_blank" rel="noopener noreferrer" href="https://youtu.be/{{ job.youtube_id }}" title="Open on YouTube">
                                 <svg class="yt-icon" viewBox="0 0 24 24" fill="currentColor"><path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"/></svg>
                                 <span>youtu.be/{{ job.youtube_id }}</span>
                                 <svg class="external-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg>
@@ -521,6 +731,12 @@
                     </td>
                     <td>
                       <div class="inline-actions">
+                        {% if can_shorts and job.job_type != 'short' %}
+                          <form method="post" action="/jobs/{{ job.id }}/repurpose" title="Extract 9:16 Short with AI">
+                            <input type="hidden" name="csrf" value="{{ csrf }}">
+                            <button class="button tiny secondary" type="submit">⚡ To Short</button>
+                          </form>
+                        {% endif %}
                         {% if job.status in ['queued','retry'] and not job.approved %}
                           <form method="post" action="/jobs/{{ job.id }}/approve">
                             <input type="hidden" name="csrf" value="{{ csrf }}">
@@ -576,10 +792,240 @@
         <div>
           <p class="eyebrow">CONFIGURATION</p>
           <h1>Connections & settings</h1>
-          <p class="muted-text">Stored secrets are encrypted at rest and never redisplayed in plain text.</p>
+          <p class="muted-text">Administrator hands-on control over profiles, API secrets, and AI automation engines.</p>
         </div>
       </div>
 
+      <!-- AI Shorts & Cloud APIs Panel -->
+      <section class="panel">
+        <div class="panel-head">
+          <div>
+            <h2>AI Shorts Engine & Cloud APIs</h2>
+            <p class="muted-text">Configure Deepgram STT, Groq (Llama 3.3 70B), Gemini Flash fallback, and kinetic subtitle styles.</p>
+          </div>
+          <span class="pill {{ 'green' if configured_deepgram_key and (configured_groq_key or configured_gemini_key) else 'muted' }}">
+            {{ 'AI Ready' if configured_deepgram_key and (configured_groq_key or configured_gemini_key) else 'Setup Needed' }}
+          </span>
+        </div>
+        <form method="post" action="/settings" class="form-grid">
+          <input type="hidden" name="csrf" value="{{ csrf }}">
+
+          <label class="wide">
+            Deepgram API Key (Speech-to-Text & Word Timestamps)
+            <span class="pill {{ 'green' if configured_deepgram_key=='configured' else 'muted' }}">{{ configured_deepgram_key|title if configured_deepgram_key else 'Not configured' }}</span>
+            <input name="deepgram_api_key" type="password" autocomplete="new-password" placeholder="Leave blank to keep saved key">
+          </label>
+
+          <label>
+            Groq API Key (Primary Viral Hook Detection - Llama 3.3 70B)
+            <span class="pill {{ 'green' if configured_groq_key=='configured' else 'muted' }}">{{ configured_groq_key|title if configured_groq_key else 'Not configured' }}</span>
+            <input name="groq_api_key" type="password" autocomplete="new-password" placeholder="Leave blank to keep saved key">
+          </label>
+
+          <label>
+            Gemini API Key (High-Reliability Fallback LLM)
+            <span class="pill {{ 'green' if configured_gemini_key=='configured' else 'muted' }}">{{ configured_gemini_key|title if configured_gemini_key else 'Not configured' }}</span>
+            <input name="gemini_api_key" type="password" autocomplete="new-password" placeholder="Leave blank to keep saved key">
+          </label>
+
+          <label>
+            9:16 Video Layout Style
+            <select name="shorts_layout">
+              <option value="blur" {{ 'selected' if shorts_layout=='blur' }}>Blurred Background Stack (Recommended)</option>
+              <option value="crop" {{ 'selected' if shorts_layout=='crop' }}>Smart Center Crop (9:16 Direct)</option>
+            </select>
+          </label>
+
+          <label>
+            Kinetic Subtitle Typography
+            <select name="shorts_font">
+              <option value="Montserrat" {{ 'selected' if shorts_font=='Montserrat' }}>Montserrat Black (Modern Bold)</option>
+              <option value="Anton" {{ 'selected' if shorts_font=='Anton' }}>Anton (Punchy Heavy)</option>
+              <option value="Impact" {{ 'selected' if shorts_font=='Impact' }}>Impact (Classic Bold)</option>
+            </select>
+          </label>
+
+          <label class="wide">
+            Kinetic Pop Active Word Style
+            <select name="shorts_caption_style">
+              <option value="hormozi_yellow" {{ 'selected' if shorts_caption_style=='hormozi_yellow' }}>Hormozi Pop (Electric Yellow #FFE600 with Active Zoom)</option>
+              <option value="viral_mint" {{ 'selected' if shorts_caption_style=='viral_mint' }}>Viral Mint (Neon Emerald #10B981 with Active Zoom)</option>
+              <option value="neon_cyan" {{ 'selected' if shorts_caption_style=='neon_cyan' }}>Neon Cyan (Vibrant Cyan #00FFFF with Active Zoom)</option>
+            </select>
+          </label>
+
+          <label class="checkline wide">
+            <input type="checkbox" name="shorts_auto_repurpose" value="true" {{ 'checked' if shorts_auto_repurpose }}>
+            <span>Automatically generate a Short job whenever a monitored channel uploads a new long video</span>
+          </label>
+
+          <h3 class="wide section-subhead">Standard Publishing & Provider Credentials</h3>
+
+          <label>
+            Default visibility
+            <select name="privacy_status">
+              <option value="private" {{ 'selected' if privacy_status=='private' }}>Private (recommended)</option>
+              <option value="unlisted" {{ 'selected' if privacy_status=='unlisted' }}>Unlisted</option>
+              <option value="public" {{ 'selected' if privacy_status=='public' }}>Public</option>
+            </select>
+          </label>
+
+          <label>
+            Category ID
+            <input name="category_id" value="{{ category_id }}" maxlength="8">
+          </label>
+
+          <label>
+            Polling interval (seconds)
+            <input name="poll_interval_seconds" type="number" min="60" max="86400" value="{{ poll_interval_seconds }}">
+          </label>
+
+          <label>
+            Maximum download size (MB)
+            <input name="max_download_mb" type="number" min="100" max="200000" value="{{ max_download_mb }}">
+          </label>
+
+          <label>
+            Retry limit
+            <input name="retry_limit" type="number" min="1" max="20" value="{{ retry_limit }}">
+          </label>
+
+          <label>
+            Upload tags <span class="optional">(comma separated)</span>
+            <input name="upload_tags" value="{{ upload_tags_display }}">
+          </label>
+
+          <label class="wide">
+            Description prefix
+            <textarea name="description_prefix" rows="2">{{ description_prefix }}</textarea>
+          </label>
+
+          <label class="wide">
+            Source attribution line
+            <input name="source_attribution" value="{{ source_attribution }}">
+          </label>
+
+          <label class="checkline wide">
+            <input type="checkbox" name="manual_approval" value="true" {{ 'checked' if manual_approval }}>
+            <span>Require manual approval for every discovered video <b>(recommended)</b></span>
+          </label>
+
+          <label class="wide">
+            Video-download API key
+            <span class="pill {{ 'green' if configured_download_key=='configured' else 'muted' }}">{{ configured_download_key|title if configured_download_key else 'Not configured' }}</span>
+            <input name="download_api_key" type="password" autocomplete="new-password" placeholder="Leave blank to keep the saved value">
+          </label>
+
+          <label>
+            Google OAuth client ID
+            {% if configured_google_id %}<span class="pill green">Configured</span>{% endif %}
+            <input name="google_client_id" autocomplete="off" placeholder="123…apps.googleusercontent.com">
+          </label>
+
+          <label>
+            Google OAuth client secret
+            {% if configured_google_secret %}<span class="pill green">Configured</span>{% endif %}
+            <input name="google_client_secret" type="password" autocomplete="new-password" placeholder="Leave blank to keep the saved value">
+          </label>
+
+          <div class="wide">
+            <button class="button primary" type="submit">Save all settings</button>
+          </div>
+        </form>
+      </section>
+
+      <!-- User Profiles & Permissions Panel (Admin Hands-On Control) -->
+      <section class="panel">
+        <div class="panel-head">
+          <div>
+            <h2>User Profiles & Access Control</h2>
+            <p class="muted-text">Assign roles to restrict access to Channel Sync, AI Shorts Studio, or grant full permissions.</p>
+          </div>
+          <span class="pill green">{{ users|length }} Active Profiles</span>
+        </div>
+
+        {% if users %}
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Username</th>
+                  <th>Assigned Workspace Access</th>
+                  <th>Created</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for u in users %}
+                  <tr>
+                    <td>
+                      <strong>{{ u.username }}</strong>
+                    </td>
+                    <td>
+                      <span class="role-badge role-{{ u.role }}">
+                        {% if u.role == 'admin' %}Administrator (Full Control)
+                        {% elif u.role == 'shorts_only' %}AI Shorts Studio Only
+                        {% elif u.role == 'sync_only' %}Channel Sync Only
+                        {% else %}Full Access (Both Workspaces){% endif %}
+                      </span>
+                    </td>
+                    <td>{{ u.created_at|int|timestamp }}</td>
+                    <td>
+                      <div class="inline-actions">
+                        <details>
+                          <summary class="text-link">Reset Pass</summary>
+                          <form method="post" action="/users/{{ u.id }}/password" class="mini-form">
+                            <input type="hidden" name="csrf" value="{{ csrf }}">
+                            <label>New Password (min 8 chars)
+                              <input type="password" name="new_password" required placeholder="••••••••">
+                            </label>
+                            <button class="button tiny primary" type="submit">Update Password</button>
+                          </form>
+                        </details>
+                        {% if u.username != username and u.role != 'admin' %}
+                          <form method="post" action="/users/{{ u.id }}/delete" onsubmit="return confirm('Delete user {{ u.username }}?');">
+                            <input type="hidden" name="csrf" value="{{ csrf }}">
+                            <button class="button tiny subtle" type="submit">Delete</button>
+                          </form>
+                        {% endif %}
+                      </div>
+                    </td>
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        {% endif %}
+
+        <div style="margin-top:20px;">
+          <h3>Create New User Profile</h3>
+          <form method="post" action="/users/create" class="form-grid">
+            <input type="hidden" name="csrf" value="{{ csrf }}">
+            <label>
+              Username
+              <input name="username" required placeholder="e.g. editor_john">
+            </label>
+            <label>
+              Password (min 8 chars)
+              <input name="password" type="password" required placeholder="••••••••">
+            </label>
+            <label class="wide">
+              App Permissions & Role
+              <select name="role">
+                <option value="both">Full Access (Both Channel Sync & AI Shorts Studio)</option>
+                <option value="shorts_only">AI Shorts Studio Only (Restricted to Shorts)</option>
+                <option value="sync_only">Channel Sync Only (Restricted to Monitored Channels)</option>
+                <option value="admin">Administrator (Full hands-on control)</option>
+              </select>
+            </label>
+            <div class="wide">
+              <button class="button secondary" type="submit">Create user profile</button>
+            </div>
+          </form>
+        </div>
+      </section>
+
+      <!-- YouTube OAuth Panel -->
       <section class="panel">
         <div class="panel-head">
           <div>
@@ -627,77 +1073,6 @@
           <div class="wide">
             <button class="button secondary" type="submit">Import token.pickle</button>
             <p class="help">Valid Google-auth Credentials files with the <code>youtube.upload</code> scope are accepted.</p>
-          </div>
-        </form>
-      </section>
-
-      <section class="panel">
-        <h2>Upload and automation rules</h2>
-        <form method="post" action="/settings" class="form-grid">
-          <input type="hidden" name="csrf" value="{{ csrf }}">
-          <label>
-            Default visibility
-            <select name="privacy_status">
-              <option value="private" {{ 'selected' if privacy_status=='private' }}>Private (recommended)</option>
-              <option value="unlisted" {{ 'selected' if privacy_status=='unlisted' }}>Unlisted</option>
-              <option value="public" {{ 'selected' if privacy_status=='public' }}>Public</option>
-            </select>
-          </label>
-          <label>
-            Category ID
-            <input name="category_id" value="{{ category_id }}" maxlength="8">
-          </label>
-          <label>
-            Polling interval (seconds)
-            <input name="poll_interval_seconds" type="number" min="60" max="86400" value="{{ poll_interval_seconds }}">
-          </label>
-          <label>
-            Maximum download size (MB)
-            <input name="max_download_mb" type="number" min="100" max="200000" value="{{ max_download_mb }}">
-          </label>
-          <label>
-            Retry limit
-            <input name="retry_limit" type="number" min="1" max="20" value="{{ retry_limit }}">
-          </label>
-          <label>
-            Upload tags <span class="optional">(comma separated)</span>
-            <input name="upload_tags" value="{{ upload_tags_display }}">
-          </label>
-          <label class="wide">
-            Description prefix
-            <textarea name="description_prefix" rows="2">{{ description_prefix }}</textarea>
-          </label>
-          <label class="wide">
-            Source attribution line
-            <input name="source_attribution" value="{{ source_attribution }}">
-          </label>
-          <label class="checkline wide">
-            <input type="checkbox" name="manual_approval" value="true" {{ 'checked' if manual_approval }}>
-            <span>Require manual approval for every discovered video <b>(recommended)</b></span>
-          </label>
-          <div class="wide">
-            <button class="button primary" type="submit">Save rules</button>
-            <span class="help inline-help">Public publishing should only be enabled after verifying content authorization and testing privately.</span>
-          </div>
-
-          <h3 class="wide section-subhead">Provider and OAuth credentials</h3>
-          <label class="wide">
-            Video-download API key
-            <span class="pill {{ 'green' if configured_download_key=='configured' else 'muted' }}">{{ configured_download_key|title if configured_download_key else 'Not configured' }}</span>
-            <input name="download_api_key" type="password" autocomplete="new-password" placeholder="Leave blank to keep the saved value">
-          </label>
-          <label>
-            Google OAuth client ID
-            {% if configured_google_id %}<span class="pill green">Configured</span>{% endif %}
-            <input name="google_client_id" autocomplete="off" placeholder="123…apps.googleusercontent.com">
-          </label>
-          <label>
-            Google OAuth client secret
-            {% if configured_google_secret %}<span class="pill green">Configured</span>{% endif %}
-            <input name="google_client_secret" type="password" autocomplete="new-password" placeholder="Leave blank to keep the saved value">
-          </label>
-          <div class="wide">
-            <button class="button secondary" type="submit">Save configuration</button>
           </div>
         </form>
       </section>

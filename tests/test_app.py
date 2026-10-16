@@ -438,3 +438,146 @@ def test_database_initialization_includes_thumbnail_path(tmp_path):
     columns = {row[1] for row in conn.execute("PRAGMA table_info(jobs)").fetchall()}
     conn.close()
     assert "thumbnail_path" in columns
+
+
+def test_users_table_and_rbac(tmp_path):
+    from app.security import verify_password
+    db = Database(tmp_path / "test_users.db")
+    db.initialize()
+
+    # Create users with different roles
+    user_id = db.create_user("creator_user", "SecretPass123!", role="shorts_only")
+    assert user_id > 0
+
+    user = db.get_user_by_username("creator_user")
+    assert user is not None
+    assert user["role"] == "shorts_only"
+    assert verify_password("SecretPass123!", user["password_hash"])
+    assert not verify_password("WrongPass", user["password_hash"])
+
+    # Update role to both
+    db.update_user_role(user_id, "both")
+    user_updated = db.get_user_by_id(user_id)
+    assert user_updated["role"] == "both"
+
+    # Update password
+    db.update_user_password(user_id, "NewSecret456!")
+    user_pw_updated = db.get_user_by_id(user_id)
+    assert verify_password("NewSecret456!", user_pw_updated["password_hash"])
+
+    # List all users
+    all_users = db.get_all_users()
+    assert any(u["username"] == "creator_user" for u in all_users)
+
+    # Delete user
+    assert db.delete_user(user_id) is True
+    assert db.get_user_by_id(user_id) is None
+
+
+def test_three_part_transcript_splitting():
+    from app.ai_shorts import ViralHookDetector
+    detector = ViralHookDetector()
+
+    # Create 90 simulated words spanning 90 seconds
+    words = []
+    for sec in range(90):
+        words.append({
+            "word": f"word_{sec}",
+            "start": float(sec),
+            "end": float(sec) + 0.8,
+        })
+
+    parts = detector.split_into_three_parts(words, total_duration=90.0)
+    assert len(parts) == 3
+    assert parts[0]["part_num"] == 1
+    assert "Beginning" in parts[0]["label"]
+    assert parts[1]["part_num"] == 2
+    assert "Middle" in parts[1]["label"]
+    assert parts[2]["part_num"] == 3
+    assert "Climax" in parts[2]["label"]
+
+    # Verify chronological bounds
+    assert parts[0]["start"] < parts[1]["start"] < parts[2]["start"]
+    assert len(parts[0]["words"]) > 0
+    assert len(parts[1]["words"]) > 0
+    assert len(parts[2]["words"]) > 0
+
+
+def test_kinetic_subtitle_ass_generation(tmp_path):
+    from app.ai_shorts import KineticSubtitleGenerator
+    words = [
+        {"word": "Look", "start": 10.0, "end": 10.4},
+        {"word": "at", "start": 10.5, "end": 10.8},
+        {"word": "this", "start": 10.9, "end": 11.3},
+        {"word": "incredible", "start": 11.4, "end": 12.0},
+        {"word": "viral", "start": 12.1, "end": 12.5},
+        {"word": "moment", "start": 12.6, "end": 13.0},
+    ]
+
+    out_file = tmp_path / "subtitles.ass"
+    res_path = KineticSubtitleGenerator.generate_ass(
+        words=words,
+        clip_start=10.0,
+        clip_end=15.0,
+        output_path=out_file,
+        font_name="Montserrat",
+        style_name="hormozi_yellow",
+    )
+
+    assert res_path.is_file()
+    content = res_path.read_text(encoding="utf-8")
+
+    assert "[Script Info]" in content
+    assert "PlayResX: 1080" in content
+    assert "PlayResY: 1920" in content
+    assert "MarginV: 380" in content or ",380," in content  # Safety zone
+    assert "\\fscx112\\fscy112" in content  # Kinetic pop animation
+    assert "LOOK" in content  # Uppercase conversion
+    assert "MOMENT" in content
+
+
+def test_database_shorts_columns_and_job_types(tmp_path):
+    db = Database(tmp_path / "test_shorts.db")
+    db.initialize()
+    conn = db.connect()
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(jobs)").fetchall()}
+    conn.close()
+
+    assert "job_type" in columns
+    assert "clip_start" in columns
+    assert "clip_end" in columns
+    assert "parent_video_id" in columns
+    assert "hook_summary" in columns
+
+
+def test_video_engine_command_construction(monkeypatch, tmp_path):
+    from app.video_engine import VideoEngine
+    dummy_video = tmp_path / "dummy.mp4"
+    dummy_video.write_bytes(b"dummy")
+    out_video = tmp_path / "short.mp4"
+
+    monkeypatch.setattr(VideoEngine, "get_ffmpeg_binary", lambda: "ffmpeg")
+
+    executed_cmd = []
+    def fake_subprocess_run(cmd, **kwargs):
+        executed_cmd.extend(cmd)
+        out_video.write_bytes(b"rendered_short")
+        return SimpleNamespace(returncode=0, stderr="")
+
+    monkeypatch.setattr("subprocess.run", fake_subprocess_run)
+
+    # Test blur layout
+    VideoEngine.render_short_clip(
+        input_video=dummy_video,
+        output_path=out_video,
+        start_seconds=10.0,
+        end_seconds=40.0,
+        layout="blur",
+    )
+    assert "-threads" in executed_cmd
+    assert "2" in executed_cmd
+    assert "-preset" in executed_cmd
+    assert "veryfast" in executed_cmd
+    assert "-filter_complex" in executed_cmd
+    assert "boxblur" in " ".join(executed_cmd)
+

@@ -177,10 +177,10 @@ class DownloadProvider:
         self.base_url = base_url.rstrip("/")
         self.poll_interval, self.max_polls = poll_interval, max_polls
 
-    def create_job(self, video_url: str) -> tuple[str, str]:
+    def create_job(self, video_url: str, format_id: str = "1080") -> tuple[str, str]:
         try:
             response = requests.get(f"{self.base_url}/ajax/download.php",
-                                   params={"url": video_url, "format": "1080", "apikey": self.api_key,
+                                   params={"url": video_url, "format": format_id, "apikey": self.api_key,
                                            "allow_extended_duration": "0"}, timeout=self.timeout)
         except requests.RequestException as exc:
             raise IntegrationError(f"Download provider request failed: {exc}", retryable=True) from exc

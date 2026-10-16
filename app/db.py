@@ -26,6 +26,14 @@ CREATE TABLE IF NOT EXISTS seen_videos (
   seen_at INTEGER NOT NULL,
   is_baseline INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS users (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  username TEXT NOT NULL UNIQUE,
+  password_hash TEXT NOT NULL,
+  role TEXT NOT NULL DEFAULT 'both',
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS jobs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   source_id INTEGER REFERENCES sources(id) ON DELETE SET NULL,
@@ -48,11 +56,17 @@ CREATE TABLE IF NOT EXISTS jobs (
   media_path TEXT,
   thumbnail_path TEXT,
   youtube_id TEXT,
+  job_type TEXT NOT NULL DEFAULT 'standard',
+  clip_start REAL,
+  clip_end REAL,
+  parent_video_id TEXT,
+  hook_summary TEXT,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_jobs_status_created ON jobs(status, created_at);
 CREATE INDEX IF NOT EXISTS idx_jobs_source ON jobs(source_id);
+CREATE INDEX IF NOT EXISTS idx_jobs_type ON jobs(job_type);
 CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL,
@@ -102,7 +116,12 @@ class Database:
                                       ("upload_started_at", "INTEGER"),
                                       ("next_attempt_at", "INTEGER"),
                                       ("media_path", "TEXT"),
-                                      ("thumbnail_path", "TEXT")):
+                                      ("thumbnail_path", "TEXT"),
+                                      ("job_type", "TEXT NOT NULL DEFAULT 'standard'"),
+                                      ("clip_start", "REAL"),
+                                      ("clip_end", "REAL"),
+                                      ("parent_video_id", "TEXT"),
+                                      ("hook_summary", "TEXT")):
                 if name not in columns:
                     conn.execute(f"ALTER TABLE jobs ADD COLUMN {name} {declaration}")
             source_columns = {row[1] for row in conn.execute("PRAGMA table_info(sources)")}
@@ -173,6 +192,31 @@ class Database:
             conn.execute("UPDATE jobs SET status='downloading',stage='downloading',attempts=attempts+1,next_attempt_at=NULL,updated_at=? WHERE id=?",
                          (now, row["id"]))
             return dict(conn.execute("SELECT * FROM jobs WHERE id=?", (row["id"],)).fetchone())
+
+    def get_user_by_username(self, username: str) -> dict[str, Any] | None:
+        return self.one("SELECT * FROM users WHERE username=?", (username,))
+
+    def get_user_by_id(self, user_id: int) -> dict[str, Any] | None:
+        return self.one("SELECT * FROM users WHERE id=?", (user_id,))
+
+    def get_all_users(self) -> list[dict[str, Any]]:
+        return self.all("SELECT id, username, role, created_at, updated_at FROM users ORDER BY created_at ASC")
+
+    def create_user(self, username: str, password_hash: str, role: str = "both") -> int:
+        now = int(time.time())
+        return self.execute("INSERT INTO users(username, password_hash, role, created_at, updated_at) VALUES(?,?,?,?,?)",
+                            (username.strip(), password_hash, role, now, now))
+
+    def delete_user(self, user_id: int) -> None:
+        self.execute("DELETE FROM users WHERE id=?", (user_id,))
+
+    def update_user_password(self, user_id: int, password_hash: str) -> None:
+        now = int(time.time())
+        self.execute("UPDATE users SET password_hash=?, updated_at=? WHERE id=?", (password_hash, now, user_id))
+
+    def update_user_role(self, user_id: int, role: str) -> None:
+        now = int(time.time())
+        self.execute("UPDATE users SET role=?, updated_at=? WHERE id=?", (role, now, user_id))
 
 
 def encode_json(value: Any) -> str:

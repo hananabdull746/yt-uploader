@@ -10,6 +10,8 @@ from .config import settings
 from .db import Database
 from .integrations import DownloadProvider, IntegrationError, YouTubeUploader, fetch_channel_feed, download_best_thumbnail
 from .security import decrypt_secret, encrypt_secret, redact_sensitive
+from .ai_shorts import DeepgramClient, KineticSubtitleGenerator, ViralHookDetector
+from .video_engine import VideoEngine
 
 
 class Worker:
@@ -162,6 +164,10 @@ class Worker:
         return decrypt_secret(value) if value and is_secret else value
 
     def _process(self, job: dict[str, Any]) -> None:
+        if job.get("job_type") == "short":
+            self._process_short(job)
+            return
+
         job_id = job["id"]
         try:
             media_path = None
@@ -247,6 +253,174 @@ class Worker:
                             (video_id, now, job_id))
             media_path.unlink(missing_ok=True)
             self.db.event(f"Upload completed; destination video ID {video_id}", job_id=job_id)
+
+            # Auto-repurpose feature: enqueue a Short job if enabled
+            try:
+                if self.db.get_setting("shorts_auto_repurpose")[0] == "true":
+                    existing = self.db.one("SELECT id FROM jobs WHERE parent_video_id=? OR video_id=?",
+                                          (job["video_id"], f"{job['video_id']}_short"))
+                    if not existing:
+                        now_ts = int(time.time())
+                        self.db.execute(
+                            "INSERT INTO jobs(source_id, source_channel_id, source_title, video_id, source_url, "
+                            "title, status, approved, job_type, parent_video_id, created_at, updated_at) "
+                            "VALUES(?,?,?,?,?,?,'queued',0,'short',?,?,?)",
+                            (job.get("source_id"), job.get("source_channel_id"), job.get("source_title", ""),
+                             f"{job['video_id']}_short", job["source_url"], f"[Short] {job['title']}",
+                             job["video_id"], now_ts, now_ts)
+                        )
+                        self.db.event(f"Auto-generated Short job queued for video {job['video_id']}", job_id=job_id)
+            except Exception as auto_err:
+                self.db.event(f"Auto-repurpose notice: {auto_err}", severity="warning", job_id=job_id)
+
+        except IntegrationError as exc:
+            self._fail(job, str(exc), retryable=exc.retryable)
+        except Exception as exc:
+            self._fail(job, f"Unexpected {type(exc).__name__}: {str(exc)[:350]}", retryable=True)
+
+    def _process_short(self, job: dict[str, Any]) -> None:
+        job_id = job["id"]
+        try:
+            clip_start = job.get("clip_start")
+            clip_end = job.get("clip_end")
+            words: list[dict[str, Any]] = []
+
+            # 1. AI Hook Detection Phase (Deepgram + Groq / Gemini 3-part split)
+            if clip_start is None or clip_end is None:
+                self.db.execute("UPDATE jobs SET stage='analyzing_audio',progress=10,updated_at=? WHERE id=?",
+                                (int(time.time()), job_id))
+                self.db.event("Downloading audio and transcribing via Deepgram Nova-2", job_id=job_id)
+
+                deepgram_key = self._secret_setting("deepgram_api_key")
+                if not deepgram_key:
+                    raise IntegrationError("Configure Deepgram API key in Settings before generating Shorts")
+                groq_key = self._secret_setting("groq_api_key") or ""
+                gemini_key = self._secret_setting("gemini_api_key") or ""
+                if not groq_key and not gemini_key:
+                    raise IntegrationError("Configure Groq or Gemini API key in Settings for AI hook detection")
+
+                api_key = self._secret_setting("download_api_key")
+                if not api_key:
+                    raise IntegrationError("Configure the video-download API key before processing jobs")
+                provider = DownloadProvider(api_key, settings.request_timeout, int(self.db.get_setting("max_download_bytes")[0] or settings.max_download_bytes), settings.downloads_path)
+
+                audio_job_id, _ = provider.create_job(job["source_url"], format_id="mp3")
+                audio_path = provider.wait_and_download(audio_job_id, job_id,
+                                                       progress=lambda p: self._update_progress(job_id, int(p * 0.3), "analyzing_audio"))
+
+                try:
+                    dg = DeepgramClient(deepgram_key, timeout=settings.request_timeout * 2)
+                    transcript_data = dg.transcribe_audio_file(audio_path)
+                    words = transcript_data.get("words") or []
+                    total_dur = transcript_data.get("duration") or 0.0
+
+                    self.db.execute("UPDATE jobs SET stage='detecting_hooks',progress=35,updated_at=? WHERE id=?",
+                                    (int(time.time()), job_id))
+                    self.db.event(f"Transcribed {len(words)} words. Analyzing 3-part segments for viral hooks", job_id=job_id)
+
+                    detector = ViralHookDetector(groq_key=groq_key, gemini_key=gemini_key, timeout=settings.request_timeout)
+                    best_clip = detector.detect_best_short(words, total_dur, job.get("title", ""))
+
+                    clip_start = best_clip["start"]
+                    clip_end = best_clip["end"]
+                    new_title = best_clip["title"]
+                    new_desc = best_clip["description"]
+                    hook_summary = f"{best_clip['hook_reason']} (Score: {best_clip['virality_score']}/100)"
+
+                    self.db.execute(
+                        "UPDATE jobs SET clip_start=?,clip_end=?,title=?,description=?,hook_summary=?,updated_at=? WHERE id=?",
+                        (clip_start, clip_end, new_title, new_desc, hook_summary, int(time.time()), job_id)
+                    )
+                    self.db.event(f"Selected viral Short hook: {clip_start:.1f}s -> {clip_end:.1f}s: {new_title}", job_id=job_id)
+                finally:
+                    audio_path.unlink(missing_ok=True)
+
+            # 2. 9:16 Video Rendering Phase with Kinetic Subtitles
+            self.db.execute("UPDATE jobs SET stage='rendering_short',progress=50,updated_at=? WHERE id=?",
+                            (int(time.time()), job_id))
+            self.db.event(f"Downloading source video and rendering 9:16 vertical Short ({clip_start:.1f}s -> {clip_end:.1f}s)", job_id=job_id)
+
+            api_key = self._secret_setting("download_api_key")
+            provider = DownloadProvider(api_key, settings.request_timeout, int(self.db.get_setting("max_download_bytes")[0] or settings.max_download_bytes), settings.downloads_path)
+
+            video_job_id, _ = provider.create_job(job["source_url"], format_id="1080")
+            raw_video = provider.wait_and_download(video_job_id, job_id,
+                                                  progress=lambda p: self._update_progress(job_id, 50 + int(p * 0.2), "rendering_short"))
+
+            short_output_path = Path(settings.downloads_path) / f"short_{job_id}_{int(time.time())}.mp4"
+            ass_path = Path(settings.downloads_path) / f"sub_{job_id}_{int(time.time())}.ass"
+
+            try:
+                layout = self.db.get_setting("shorts_layout")[0] or "blur"
+                font = self.db.get_setting("shorts_font")[0] or "Montserrat"
+                caption_style = self.db.get_setting("shorts_caption_style")[0] or "hormozi_yellow"
+
+                subtitles_file = None
+                if words:
+                    subtitles_file = KineticSubtitleGenerator.generate_ass(
+                        words, clip_start, clip_end, ass_path, font_name=font, style_name=caption_style
+                    )
+
+                VideoEngine.render_short_clip(
+                    input_video=raw_video,
+                    output_path=short_output_path,
+                    start_seconds=clip_start,
+                    end_seconds=clip_end,
+                    layout=layout,
+                    subtitles_ass_path=subtitles_file
+                )
+            finally:
+                raw_video.unlink(missing_ok=True)
+                ass_path.unlink(missing_ok=True)
+
+            self.db.execute("UPDATE jobs SET media_path=?,updated_at=? WHERE id=?",
+                            (str(short_output_path), int(time.time()), job_id))
+
+            # 3. YouTube Shorts Upload Phase
+            token_row = self.db.one("SELECT credentials_enc FROM oauth_tokens WHERE id=1")
+            if not token_row:
+                raise IntegrationError("Connect a destination YouTube account before processing jobs")
+            token_json = decrypt_secret(token_row["credentials_enc"])
+
+            def save_credentials(value: str) -> None:
+                now = int(time.time())
+                self.db.execute("UPDATE oauth_tokens SET credentials_enc=?,updated_at=? WHERE id=1",
+                                (encrypt_secret(value), now))
+
+            def save_session(uri: str | None) -> None:
+                encrypted = encrypt_secret(uri) if uri else None
+                now = int(time.time())
+                self.db.execute("UPDATE jobs SET upload_session_enc=?,upload_started_at=?,updated_at=? WHERE id=?",
+                                (encrypted, now if uri else None, now, job_id))
+
+            settings_row = self._metadata_settings()
+            uploader = YouTubeUploader(token_json, on_credentials=save_credentials, timeout=settings.request_timeout)
+            self.db.execute("UPDATE jobs SET status='uploading',stage='uploading',progress=75,updated_at=? WHERE id=?",
+                            (int(time.time()), job_id))
+            self.db.event("Shorts upload started to YouTube", job_id=job_id)
+
+            tags = list(settings_row.get("upload_tags", []))
+            if "Shorts" not in tags:
+                tags.append("Shorts")
+
+            current_job = self.db.one("SELECT title,description FROM jobs WHERE id=?", (job_id,))
+            title = current_job["title"] if current_job else job["title"]
+            if "#Shorts" not in title and "#shorts" not in title.lower():
+                title = f"{title} #Shorts"
+
+            video_id = uploader.upload(short_output_path, {
+                "title": title,
+                "description": (current_job["description"] if current_job else "") + "\n\n#Shorts #Viral",
+                "tags": tags,
+                "category_id": settings_row.get("category_id", "22")
+            }, settings_row.get("privacy_status", "private"),
+               save_session=save_session, on_progress=lambda p: self._update_progress(job_id, 75 + int(p * 0.25), "uploading"))
+
+            now = int(time.time())
+            self.db.execute("UPDATE jobs SET status='completed',stage='completed',progress=100,youtube_id=?,error=NULL,upload_session_enc=NULL,upload_started_at=NULL,media_path=NULL,thumbnail_path=NULL,updated_at=? WHERE id=?",
+                            (video_id, now, job_id))
+            short_output_path.unlink(missing_ok=True)
+            self.db.event(f"Shorts upload completed; destination video ID {video_id}", job_id=job_id)
         except IntegrationError as exc:
             self._fail(job, str(exc), retryable=exc.retryable)
         except Exception as exc:
