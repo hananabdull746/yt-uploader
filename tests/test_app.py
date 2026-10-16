@@ -581,3 +581,64 @@ def test_video_engine_command_construction(monkeypatch, tmp_path):
     assert "-filter_complex" in executed_cmd
     assert "boxblur" in " ".join(executed_cmd)
 
+
+def test_user_oauth_token_storage_and_cascade(tmp_path):
+    db = Database(tmp_path / "test_user_oauth.db")
+    db.initialize()
+
+    # Create a user
+    user_id = db.create_user("creator_yt", "Pass123456!", role="shorts_only")
+    assert user_id > 0
+
+    # Store per-user channel
+    enc_creds = encrypt_secret('{"refresh_token":"user-refresh-token"}')
+    db.set_user_oauth(user_id, enc_creds, channel_title="Creator Tech", channel_id="UC1234567890")
+
+    token_info = db.get_user_oauth(user_id)
+    assert token_info is not None
+    assert token_info["channel_title"] == "Creator Tech"
+    assert token_info["channel_id"] == "UC1234567890"
+    assert decrypt_secret(token_info["credentials_enc"]) == '{"refresh_token":"user-refresh-token"}'
+
+    # Check get_all_users list includes channel
+    users = db.get_all_users()
+    matched = [u for u in users if u["id"] == user_id][0]
+    assert matched["has_channel"] == 1
+    assert matched["channel_title"] == "Creator Tech"
+
+    # Delete user and verify cascade
+    db.delete_user(user_id)
+    assert db.get_user_oauth(user_id) is None
+
+
+def test_worker_routes_to_user_specific_channel(monkeypatch, tmp_path):
+    db = Database(tmp_path / "test_worker_user.db")
+    db.initialize()
+
+    now = int(time.time())
+    # System channel
+    db.execute("INSERT INTO oauth_tokens(id,credentials_enc,connected_at,updated_at) VALUES(1,?,?,?)",
+               (encrypt_secret(json.dumps({"token":"sys-tok","refresh_token":"sys-ref",
+                                          "token_uri":"https://oauth2.googleapis.com/token",
+                                          "client_id":"id","client_secret":"sec","scopes":[YOUTUBE_SCOPE]})), now, now))
+
+    # User 2 channel
+    user_id = db.create_user("user_creator", "SecretPass123!", role="shorts_only")
+    db.set_user_oauth(user_id, encrypt_secret(json.dumps({"token":"user-tok","refresh_token":"user-ref",
+                                                          "token_uri":"https://oauth2.googleapis.com/token",
+                                                          "client_id":"id","client_secret":"sec","scopes":[YOUTUBE_SCOPE]})),
+                      channel_title="User Channel", channel_id="UCUSER123")
+
+    worker = Worker(db)
+
+    # Job owned by user 2
+    job_with_user = {"id": 1, "user_id": user_id, "title": "User Video"}
+    uploader_user = worker._get_uploader_for_job(job_with_user)
+    assert uploader_user.credentials.refresh_token == "user-ref"
+
+    # Job without user_id (system fallback)
+    job_system = {"id": 2, "user_id": None, "title": "System Video"}
+    uploader_sys = worker._get_uploader_for_job(job_system)
+    assert uploader_sys.credentials.refresh_token == "sys-ref"
+
+

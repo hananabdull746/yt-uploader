@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{{ page|title }} · YT Uploader</title>
-  <link rel="stylesheet" href="/static/style.css?v=2.2">
+  <link rel="stylesheet" href="/static/style.css?v=2.3">
 </head>
 <body>
 <header class="topbar">
@@ -50,6 +50,11 @@
     <span class="user">
       {{ username }}
       <span class="role-badge role-{{ user_role }}">{{ user_role|replace('_', ' ')|title }}</span>
+      {% if has_channel and channel_name %}
+        <span class="role-badge" style="background:rgba(239, 68, 68, 0.15); color:#f87171; border-color:rgba(239, 68, 68, 0.3);" title="Connected YouTube Channel">
+          ▶ {{ channel_name }}
+        </span>
+      {% endif %}
     </span>
     <form method="post" action="/logout">
       <input type="hidden" name="csrf" value="{{ csrf }}">
@@ -313,6 +318,58 @@
           <p class="muted-text">Transform long videos into 9:16 viral Shorts with kinetic subtitles and AI hook detection.</p>
         </div>
       </div>
+
+      <!-- User Connected YouTube Channel Card -->
+      <section class="panel" style="border: 1px solid rgba(99, 102, 241, 0.25); background: linear-gradient(135deg, rgba(30, 41, 59, 0.7) 0%, rgba(15, 23, 42, 0.9) 100%);">
+        <div class="panel-head">
+          <div style="display:flex; align-items:center; gap:12px;">
+            <div style="background: rgba(239, 68, 68, 0.15); color: #ef4444; width:36px; height:36px; border-radius:8px; display:flex; align-items:center; justify-content:center;">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"/></svg>
+            </div>
+            <div>
+              <h2 style="margin:0; font-size:1.05rem;">My Destination YouTube Channel</h2>
+              <p class="muted-text" style="margin:2px 0 0 0; font-size:0.82rem;">
+                Shorts created by <strong>{{ username }}</strong> will publish directly to this channel.
+              </p>
+            </div>
+          </div>
+          <div>
+            {% if has_channel %}
+              <span class="pill green" style="font-weight:600;">
+                <span class="status-indicator"></span>
+                Connected: {{ channel_name or 'YouTube Channel' }}
+              </span>
+            {% else %}
+              <span class="pill muted">Not connected</span>
+            {% endif %}
+          </div>
+        </div>
+
+        <div style="margin-top:14px; display:flex; flex-wrap:wrap; align-items:center; gap:12px;">
+          {% if has_channel %}
+            <form method="post" action="/oauth/disconnect" onsubmit="return confirm('Disconnect your YouTube channel?');" style="margin:0;">
+              <input type="hidden" name="csrf" value="{{ csrf }}">
+              <button class="button subtle tiny" type="submit">Disconnect My Channel</button>
+            </form>
+          {% else %}
+            <form method="post" action="/oauth/start" style="margin:0;">
+              <input type="hidden" name="csrf" value="{{ csrf }}">
+              <button class="button primary tiny" type="submit">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"></path><polyline points="10 17 15 12 10 7"></polyline><line x1="15" y1="12" x2="3" y2="12"></line></svg>
+                Connect YouTube Channel (Google Sign-In)
+              </button>
+            </form>
+            <details style="margin-left:8px;">
+              <summary class="text-link" style="font-size:0.85rem; cursor:pointer;">Or import token.pickle ▾</summary>
+              <form method="post" action="/oauth/import-pickle" enctype="multipart/form-data" class="mini-form" style="margin-top:8px;">
+                <input type="hidden" name="csrf" value="{{ csrf }}">
+                <input type="file" name="token_file" accept=".pickle,.pkl" required style="font-size:0.8rem;">
+                <button class="button secondary tiny" type="submit">Import</button>
+              </form>
+            </details>
+          {% endif %}
+        </div>
+      </section>
 
       <section class="panel hero-shorts-panel">
         <div class="panel-head">
@@ -951,6 +1008,7 @@
                 <tr>
                   <th>Username</th>
                   <th>Assigned Workspace Access</th>
+                  <th>Connected Channel</th>
                   <th>Created</th>
                   <th>Actions</th>
                 </tr>
@@ -968,6 +1026,16 @@
                         {% elif u.role == 'sync_only' %}Channel Sync Only
                         {% else %}Full Access (Both Workspaces){% endif %}
                       </span>
+                    </td>
+                    <td>
+                      {% if u.has_channel %}
+                        <span class="pill green" style="font-size:0.75rem; padding:3px 8px;">
+                          <span class="status-indicator"></span>
+                          {{ u.channel_title or 'Connected' }}
+                        </span>
+                      {% else %}
+                        <span class="pill muted" style="font-size:0.75rem; padding:3px 8px;">System Default</span>
+                      {% endif %}
                     </td>
                     <td>{{ u.created_at|int|timestamp }}</td>
                     <td>

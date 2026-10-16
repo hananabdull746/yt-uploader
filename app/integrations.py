@@ -341,6 +341,35 @@ class YouTubeUploader:
         self.timeout = timeout
         self.chunk_size = chunk_size
 
+    @classmethod
+    def fetch_channel_info(cls, credentials_json: str, timeout: int = 15) -> tuple[str, str]:
+        """Fetch the authenticated user's YouTube channel title and channel ID."""
+        try:
+            creds = load_credentials(credentials_json)
+            if not creds.valid:
+                if creds.refresh_token:
+                    creds.refresh(GoogleRequest())
+            token = creds.token
+            if not token:
+                return ("Connected Channel", "")
+            res = requests.get(
+                "https://www.googleapis.com/youtube/v3/channels",
+                params={"part": "snippet", "mine": "true"},
+                headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+                timeout=timeout,
+            )
+            if res.ok:
+                data = res.json()
+                items = data.get("items") or []
+                if items:
+                    snippet = items[0].get("snippet") or {}
+                    title = snippet.get("title") or "YouTube Channel"
+                    channel_id = items[0].get("id") or ""
+                    return (title, channel_id)
+        except Exception:
+            pass
+        return ("Connected Channel", "")
+
     def _access_token(self) -> str:
         if not self.credentials.valid:
             if not self.credentials.refresh_token:

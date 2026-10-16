@@ -204,15 +204,7 @@ class Worker:
                 if thumbnail_path:
                     self.db.execute("UPDATE jobs SET thumbnail_path=?,updated_at=? WHERE id=?",
                                     (str(thumbnail_path), int(time.time()), job_id))
-            token_row = self.db.one("SELECT credentials_enc FROM oauth_tokens WHERE id=1")
-            if not token_row:
-                raise IntegrationError("Connect a destination YouTube account before processing jobs")
-            token_json = decrypt_secret(token_row["credentials_enc"])
-
-            def save_credentials(value: str) -> None:
-                now = int(time.time())
-                self.db.execute("UPDATE oauth_tokens SET credentials_enc=?,updated_at=? WHERE id=1",
-                                (encrypt_secret(value), now))
+            uploader = self._get_uploader_for_job(job)
 
             def save_session(uri: str | None) -> None:
                 encrypted = encrypt_secret(uri) if uri else None
@@ -223,7 +215,6 @@ class Worker:
             stored_session = self.db.one("SELECT upload_session_enc FROM jobs WHERE id=?", (job_id,))
             session_uri = decrypt_secret(stored_session["upload_session_enc"]) if stored_session and stored_session["upload_session_enc"] else None
             settings_row = self._metadata_settings()
-            uploader = YouTubeUploader(token_json, on_credentials=save_credentials, timeout=settings.request_timeout)
             self.db.execute("UPDATE jobs SET status='uploading',stage='uploading',progress=0,updated_at=? WHERE id=?",
                             (int(time.time()), job_id))
             self.db.event("Upload started", job_id=job_id)
@@ -377,15 +368,7 @@ class Worker:
                             (str(short_output_path), int(time.time()), job_id))
 
             # 3. YouTube Shorts Upload Phase
-            token_row = self.db.one("SELECT credentials_enc FROM oauth_tokens WHERE id=1")
-            if not token_row:
-                raise IntegrationError("Connect a destination YouTube account before processing jobs")
-            token_json = decrypt_secret(token_row["credentials_enc"])
-
-            def save_credentials(value: str) -> None:
-                now = int(time.time())
-                self.db.execute("UPDATE oauth_tokens SET credentials_enc=?,updated_at=? WHERE id=1",
-                                (encrypt_secret(value), now))
+            uploader = self._get_uploader_for_job(job)
 
             def save_session(uri: str | None) -> None:
                 encrypted = encrypt_secret(uri) if uri else None
@@ -394,7 +377,6 @@ class Worker:
                                 (encrypted, now if uri else None, now, job_id))
 
             settings_row = self._metadata_settings()
-            uploader = YouTubeUploader(token_json, on_credentials=save_credentials, timeout=settings.request_timeout)
             self.db.execute("UPDATE jobs SET status='uploading',stage='uploading',progress=75,updated_at=? WHERE id=?",
                             (int(time.time()), job_id))
             self.db.event("Shorts upload started to YouTube", job_id=job_id)
@@ -425,6 +407,35 @@ class Worker:
             self._fail(job, str(exc), retryable=exc.retryable)
         except Exception as exc:
             self._fail(job, f"Unexpected {type(exc).__name__}: {str(exc)[:350]}", retryable=True)
+
+    def _get_uploader_for_job(self, job: dict[str, Any]) -> YouTubeUploader:
+        user_id = job.get("user_id")
+        token_row = None
+        is_user_token = False
+
+        if user_id:
+            token_row = self.db.one("SELECT credentials_enc FROM user_oauth_tokens WHERE user_id=?", (user_id,))
+            if token_row:
+                is_user_token = True
+
+        if not token_row:
+            token_row = self.db.one("SELECT credentials_enc FROM oauth_tokens WHERE id=1")
+
+        if not token_row:
+            raise IntegrationError("Connect a destination YouTube account before processing jobs")
+
+        token_json = decrypt_secret(token_row["credentials_enc"])
+
+        def save_credentials(value: str) -> None:
+            now = int(time.time())
+            if is_user_token and user_id:
+                self.db.execute("UPDATE user_oauth_tokens SET credentials_enc=?,updated_at=? WHERE user_id=?",
+                                (encrypt_secret(value), now, user_id))
+            else:
+                self.db.execute("UPDATE oauth_tokens SET credentials_enc=?,updated_at=? WHERE id=1",
+                                (encrypt_secret(value), now))
+
+        return YouTubeUploader(token_json, on_credentials=save_credentials, timeout=settings.request_timeout)
 
     def _metadata_settings(self) -> dict[str, Any]:
         import json

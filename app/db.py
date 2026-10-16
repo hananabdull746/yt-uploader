@@ -61,6 +61,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   clip_end REAL,
   parent_video_id TEXT,
   hook_summary TEXT,
+  user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
@@ -73,6 +74,14 @@ CREATE TABLE IF NOT EXISTS settings (
 CREATE TABLE IF NOT EXISTS oauth_tokens (
   id INTEGER PRIMARY KEY CHECK (id=1),
   credentials_enc TEXT NOT NULL,
+  connected_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS user_oauth_tokens (
+  user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  credentials_enc TEXT NOT NULL,
+  channel_title TEXT NOT NULL DEFAULT '',
+  channel_id TEXT NOT NULL DEFAULT '',
   connected_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
@@ -120,7 +129,8 @@ class Database:
                                           ("clip_start", "REAL"),
                                           ("clip_end", "REAL"),
                                           ("parent_video_id", "TEXT"),
-                                          ("hook_summary", "TEXT")):
+                                          ("hook_summary", "TEXT"),
+                                          ("user_id", "INTEGER REFERENCES users(id) ON DELETE SET NULL")):
                     if name not in columns:
                         conn.execute(f"ALTER TABLE jobs ADD COLUMN {name} {declaration}")
             
@@ -132,13 +142,14 @@ class Database:
                     if name not in source_columns:
                         conn.execute(f"ALTER TABLE sources ADD COLUMN {name} {declaration}")
 
-            # Step 2: Create any missing tables (users, settings, oauth_tokens, events)
+            # Step 2: Create any missing tables (users, settings, oauth_tokens, user_oauth_tokens, events)
             conn.executescript(SCHEMA)
 
             # Step 3: Now that all columns are guaranteed to exist, create indexes on jobs
             conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_status_created ON jobs(status, created_at)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_source ON jobs(source_id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_type ON jobs(job_type)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_user ON jobs(user_id)")
         finally:
             conn.close()
 
@@ -209,7 +220,27 @@ class Database:
         return self.one("SELECT * FROM users WHERE id=?", (user_id,))
 
     def get_all_users(self) -> list[dict[str, Any]]:
-        return self.all("SELECT id, username, role, created_at, updated_at FROM users ORDER BY created_at ASC")
+        return self.all(
+            "SELECT u.id, u.username, u.role, u.created_at, u.updated_at, "
+            "t.channel_title, t.channel_id, CASE WHEN t.user_id IS NOT NULL THEN 1 ELSE 0 END AS has_channel "
+            "FROM users u LEFT JOIN user_oauth_tokens t ON t.user_id=u.id ORDER BY u.created_at ASC"
+        )
+
+    def get_user_oauth(self, user_id: int) -> dict[str, Any] | None:
+        return self.one("SELECT * FROM user_oauth_tokens WHERE user_id=?", (user_id,))
+
+    def set_user_oauth(self, user_id: int, credentials_enc: str, channel_title: str = "", channel_id: str = "") -> None:
+        now = int(time.time())
+        self.execute(
+            "INSERT INTO user_oauth_tokens(user_id, credentials_enc, channel_title, channel_id, connected_at, updated_at) "
+            "VALUES(?,?,?,?,?,?) "
+            "ON CONFLICT(user_id) DO UPDATE SET credentials_enc=excluded.credentials_enc, "
+            "channel_title=excluded.channel_title, channel_id=excluded.channel_id, updated_at=excluded.updated_at",
+            (user_id, credentials_enc, channel_title.strip()[:200], channel_id.strip()[:100], now, now)
+        )
+
+    def delete_user_oauth(self, user_id: int) -> None:
+        self.execute("DELETE FROM user_oauth_tokens WHERE user_id=?", (user_id,))
 
     def create_user(self, username: str, password_hash: str, role: str = "both") -> int:
         now = int(time.time())

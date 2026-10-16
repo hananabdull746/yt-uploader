@@ -22,7 +22,7 @@ load_dotenv()
 
 from .config import settings
 from .db import Database
-from .integrations import IntegrationError, fetch_channel_feed, import_google_credentials_pickle, normalize_channel_id, oauth_authorization_url, oauth_exchange
+from .integrations import IntegrationError, fetch_channel_feed, import_google_credentials_pickle, normalize_channel_id, oauth_authorization_url, oauth_exchange, YouTubeUploader
 from .security import decrypt_secret, encrypt_secret, hash_password, login_allowed, new_csrf_token, record_login_failure, clear_login_failures, valid_csrf, verify_password, redact_sensitive
 from .worker import Worker
 
@@ -272,10 +272,19 @@ def render_page(request: Request, page: str, message: str | None = None, error: 
     standard_jobs = [j for j in all_jobs if j.get("job_type") != "short"]
     shorts_jobs = [j for j in all_jobs if j.get("job_type") == "short"]
 
+    user_channel = DB.get_user_oauth(user["id"])
+    system_channel_connected = bool(DB.one("SELECT id FROM oauth_tokens WHERE id=1"))
+    has_channel = bool(user_channel) or (is_admin and system_channel_connected)
+    channel_name = user_channel["channel_title"] if user_channel and user_channel.get("channel_title") else ("System Channel" if system_channel_connected else "")
+
     data = {
         "request": request, "page": page, "username": username, "user_role": role,
         "is_admin": is_admin, "can_sync": can_sync, "can_shorts": can_shorts,
         "csrf": csrf, "message": message, "error": error,
+        "user_channel": user_channel,
+        "has_user_channel": bool(user_channel),
+        "has_channel": has_channel,
+        "channel_name": channel_name,
         "sources": DB.all("SELECT * FROM sources ORDER BY created_at DESC") if can_sync else [],
         "jobs": all_jobs,
         "standard_jobs": standard_jobs,
@@ -496,9 +505,9 @@ def create_short_from_url(request: Request, url: str = Form(...), confirm_rights
     now = int(time.time())
 
     DB.execute(
-        "INSERT INTO jobs(source_channel_id, source_title, video_id, source_url, title, status, approved, job_type, parent_video_id, created_at, updated_at) "
-        "VALUES(?,?,?,?,?,'queued',1,'short',?,?,?)",
-        ("manual_short", "AI Shorts Studio", short_vid_id, clean_url, f"Short from {video_id}", video_id, now, now)
+        "INSERT INTO jobs(source_channel_id, source_title, video_id, source_url, title, status, approved, job_type, parent_video_id, user_id, created_at, updated_at) "
+        "VALUES(?,?,?,?,?,'queued',1,'short',?,?,?,?)",
+        ("manual_short", "AI Shorts Studio", short_vid_id, clean_url, f"Short from {video_id}", video_id, user.get("id"), now, now)
     )
     DB.event(f"New Short job enqueued by {user['username']} for {clean_url}")
     return RedirectResponse("/shorts?message=Video%20queued%20for%20AI%20Short%20generation", status_code=303)
@@ -514,10 +523,10 @@ def repurpose_job(job_id: int, request: Request, csrf: str = Form(...), user: di
     now = int(time.time())
     short_vid_id = f"{job['video_id']}_short_{int(time.time())}"
     DB.execute(
-        "INSERT INTO jobs(source_id, source_channel_id, source_title, video_id, source_url, title, status, approved, job_type, parent_video_id, created_at, updated_at) "
-        "VALUES(?,?,?,?,?,'queued',1,'short',?,?,?)",
+        "INSERT INTO jobs(source_id, source_channel_id, source_title, video_id, source_url, title, status, approved, job_type, parent_video_id, user_id, created_at, updated_at) "
+        "VALUES(?,?,?,?,?,'queued',1,'short',?,?,?,?)",
         (job.get("source_id"), job.get("source_channel_id"), job.get("source_title", ""),
-         short_vid_id, job["source_url"], f"[Short] {job['title']}", job["video_id"], now, now)
+         short_vid_id, job["source_url"], f"[Short] {job['title']}", job["video_id"], user.get("id"), now, now)
     )
     DB.event(f"Job {job_id} repurposed to Short by {user['username']}")
     return RedirectResponse("/shorts?message=Video%20queued%20for%20Shorts%20repurposing", status_code=303)
@@ -620,22 +629,25 @@ def save_settings(request: Request, csrf: str = Form(...), privacy_status: str =
 
 
 @app.post("/oauth/start")
-def oauth_start(request: Request, csrf: str = Form(...), username: str = Depends(require_login)):
+def oauth_start(request: Request, csrf: str = Form(...), user: dict = Depends(get_current_user)):
     assert_csrf(request, csrf)
     client_id = stored_setting("google_client_id")
     client_secret = stored_setting("google_client_secret")
+    redirect_target = "/shorts" if user["role"] == "shorts_only" else "/settings"
     if not client_id or not client_secret:
-        return RedirectResponse("/settings?error=Save%20your%20Google%20OAuth%20client%20ID%20and%20secret%20first", status_code=303)
+        return RedirectResponse(f"{redirect_target}?error=" + quote("Google OAuth client ID and secret must be configured in Settings by an administrator"), status_code=303)
     redirect_uri = settings.oauth_redirect_uri
     state = secrets.token_urlsafe(32)
     request.session["oauth_state"] = state
+    request.session["oauth_user_id"] = user["id"]
     try:
         url, code_verifier = oauth_authorization_url(client_id, client_secret, redirect_uri, state)
         request.session["oauth_code_verifier"] = code_verifier
     except Exception as exc:
         request.session.pop("oauth_state", None)
         request.session.pop("oauth_code_verifier", None)
-        return RedirectResponse("/settings?error=" + quote(f"Could not start OAuth: {exc}"), status_code=303)
+        request.session.pop("oauth_user_id", None)
+        return RedirectResponse(f"{redirect_target}?error=" + quote(f"Could not start OAuth: {exc}"), status_code=303)
     return RedirectResponse(url, status_code=302)
 
 
@@ -643,6 +655,18 @@ def oauth_start(request: Request, csrf: str = Form(...), username: str = Depends
 def oauth_callback(request: Request, code: str | None = None, state: str | None = None, error: str | None = None):
     expected = request.session.pop("oauth_state", None)
     code_verifier = request.session.pop("oauth_code_verifier", None)
+    oauth_user_id = request.session.pop("oauth_user_id", None)
+
+    current_user = None
+    try:
+        current_user = get_current_user(request)
+    except Exception:
+        pass
+
+    target_user_id = oauth_user_id or (current_user["id"] if current_user else 1)
+    is_admin = bool(current_user and current_user.get("role") == "admin")
+    redirect_target = "/shorts" if (current_user and current_user.get("role") == "shorts_only") else "/settings"
+
     if error:
         raise HTTPException(400, "Google authorization was not completed")
     if not expected or not state or not secrets.compare_digest(str(expected), str(state)) or not code:
@@ -653,19 +677,29 @@ def oauth_callback(request: Request, code: str | None = None, state: str | None 
         credentials_json = oauth_exchange(stored_setting("google_client_id") or "", stored_setting("google_client_secret") or "",
                                           settings.oauth_redirect_uri, state, str(request.url), code_verifier)
         encrypted = encrypt_secret(credentials_json)
-        now = int(time.time())
-        DB.execute("INSERT INTO oauth_tokens(id,credentials_enc,connected_at,updated_at) VALUES(1,?,?,?) ON CONFLICT(id) DO UPDATE SET credentials_enc=excluded.credentials_enc,updated_at=excluded.updated_at",
-                   (encrypted, now, now))
-        DB.event("Google destination account connected")
+        channel_title, channel_id = YouTubeUploader.fetch_channel_info(credentials_json)
+
+        # Save to user's connected channels
+        DB.set_user_oauth(target_user_id, encrypted, channel_title=channel_title, channel_id=channel_id)
+
+        # If admin or primary user, also save as system default
+        if is_admin or target_user_id == 1:
+            now = int(time.time())
+            DB.execute("INSERT INTO oauth_tokens(id,credentials_enc,connected_at,updated_at) VALUES(1,?,?,?) ON CONFLICT(id) DO UPDATE SET credentials_enc=excluded.credentials_enc,updated_at=excluded.updated_at",
+                       (encrypted, now, now))
+
+        user_name = current_user["username"] if current_user else f"User {target_user_id}"
+        DB.event(f"YouTube channel '{channel_title}' connected for {user_name}")
     except Exception as exc:
         raise HTTPException(400, "Google OAuth connection failed: " + redact_sensitive(exc, 500))
-    return RedirectResponse("/settings?message=YouTube%20destination%20connected", status_code=303)
+    return RedirectResponse(f"{redirect_target}?message=" + quote(f"YouTube channel '{channel_title}' connected successfully!"), status_code=303)
 
 
 @app.post("/oauth/import-pickle")
 async def oauth_import_pickle(request: Request, csrf: str = Form(...), token_file: UploadFile = File(...),
-                              username: str = Depends(require_login)):
+                              user: dict = Depends(get_current_user)):
     assert_csrf(request, csrf)
+    redirect_target = "/shorts" if user["role"] == "shorts_only" else "/settings"
     filename = (token_file.filename or "").replace("\\", "/").rsplit("/", 1)[-1]
     if Path(filename).suffix.lower() not in {".pickle", ".pkl"}:
         raise HTTPException(422, "Choose a .pickle or .pkl Google credential file")
@@ -674,21 +708,30 @@ async def oauth_import_pickle(request: Request, csrf: str = Form(...), token_fil
     try:
         credentials_json = import_google_credentials_pickle(payload)
     except IntegrationError as exc:
-        return RedirectResponse("/settings?error=" + quote(str(exc)), status_code=303)
-    now = int(time.time())
-    DB.execute("INSERT INTO oauth_tokens(id,credentials_enc,connected_at,updated_at) VALUES(1,?,?,?) "
-               "ON CONFLICT(id) DO UPDATE SET credentials_enc=excluded.credentials_enc,connected_at=excluded.connected_at,updated_at=excluded.updated_at",
-               (encrypt_secret(credentials_json), now, now))
-    DB.event("Google token.pickle credentials imported by administrator")
-    return RedirectResponse("/settings?message=Google%20credentials%20imported", status_code=303)
+        return RedirectResponse(f"{redirect_target}?error=" + quote(str(exc)), status_code=303)
+
+    encrypted = encrypt_secret(credentials_json)
+    channel_title, channel_id = YouTubeUploader.fetch_channel_info(credentials_json)
+
+    DB.set_user_oauth(user["id"], encrypted, channel_title=channel_title, channel_id=channel_id)
+    if user["role"] == "admin" or user["id"] == 1:
+        now = int(time.time())
+        DB.execute("INSERT INTO oauth_tokens(id,credentials_enc,connected_at,updated_at) VALUES(1,?,?,?) "
+                   "ON CONFLICT(id) DO UPDATE SET credentials_enc=excluded.credentials_enc,connected_at=excluded.connected_at,updated_at=excluded.updated_at",
+                   (encrypted, now, now))
+    DB.event(f"YouTube token.pickle imported for {user['username']} ('{channel_title}')")
+    return RedirectResponse(f"{redirect_target}?message=" + quote(f"YouTube channel '{channel_title}' imported successfully!"), status_code=303)
 
 
 @app.post("/oauth/disconnect")
-def oauth_disconnect(request: Request, csrf: str = Form(...), username: str = Depends(require_login)):
+def oauth_disconnect(request: Request, csrf: str = Form(...), user: dict = Depends(get_current_user)):
     assert_csrf(request, csrf)
-    DB.execute("DELETE FROM oauth_tokens WHERE id=1")
-    DB.event("Google destination account disconnected")
-    return RedirectResponse("/settings", status_code=303)
+    redirect_target = "/shorts" if user["role"] == "shorts_only" else "/settings"
+    DB.delete_user_oauth(user["id"])
+    if user["role"] == "admin":
+        DB.execute("DELETE FROM oauth_tokens WHERE id=1")
+    DB.event(f"YouTube channel disconnected for {user['username']}")
+    return RedirectResponse(f"{redirect_target}?message=YouTube%20channel%20disconnected", status_code=303)
 
 
 @app.get("/api/overview")
