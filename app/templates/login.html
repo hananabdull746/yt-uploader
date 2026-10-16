@@ -1,3 +1,43 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Sign in · YT Uploader</title><link rel="stylesheet" href="/static/style.css"></head>
-<body class="login-page"><main class="login-card"><div class="brand login-brand"><span class="brand-mark">YT</span><div><strong>YT Uploader</strong><small>Administrator access</small></div></div><h1>Sign in</h1><p class="muted-text">Use the administrator credentials created during installation.</p>{% if error %}<div class="alert danger">{{ error }}</div>{% endif %}<form method="post" action="/login" class="login-form"><input type="hidden" name="csrf" value="{{ csrf }}"><label>Username<input name="username" autocomplete="username" required autofocus></label><label>Password<input type="password" name="password" autocomplete="current-password" required></label><button class="button primary full">Sign in</button></form><p class="login-foot">Local self-hosted service · Access is protected</p></main></body></html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sign in · YT Uploader</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="login-page">
+  <main class="login-card">
+    <div class="brand login-brand">
+      <span class="brand-mark">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M22.54 6.42a2.78 2.78 0 0 0-1.94-2C18.88 4 12 4 12 4s-6.88 0-8.6.46a2.78 2.78 0 0 0-1.94 2A29 29 0 0 0 1 11.75a29 29 0 0 0 .46 5.33A2.78 2.78 0 0 0 3.4 19c1.72.46 8.6.46 8.6.46s6.88 0 8.6-.46a2.78 2.78 0 0 0 1.94-2 29 29 0 0 0 .46-5.25 29 29 0 0 0-.46-5.33z"/><polygon points="9.75 15.02 15.5 11.75 9.75 8.48 9.75 15.02"/></svg>
+      </span>
+      <div>
+        <strong>YT Uploader</strong>
+        <small>Administrator Console</small>
+      </div>
+    </div>
+    <h1>Sign in</h1>
+    <p class="muted-text">Use the administrator credentials created during installation.</p>
+    {% if error %}
+      <div class="alert danger">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+        <span>{{ error }}</span>
+      </div>
+    {% endif %}
+    <form method="post" action="/login" class="login-form">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <label>
+        Username
+        <input name="username" autocomplete="username" required autofocus placeholder="admin">
+      </label>
+      <label>
+        Password
+        <input type="password" name="password" autocomplete="current-password" required placeholder="••••••••••••">
+      </label>
+      <button class="button primary full" type="submit">Sign in</button>
+    </form>
+    <p class="login-foot">Self-hosted publishing engine · Local service protected</p>
+  </main>
+</body>
+</html>

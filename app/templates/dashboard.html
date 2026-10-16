@@ -1,39 +1,767 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{{ page|title }} · YT Uploader</title><link rel="stylesheet" href="/static/style.css">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ page|title }} · YT Uploader</title>
+  <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-<header class="topbar"><div class="brand"><span class="brand-mark">YT</span><div><strong>YT Uploader</strong><small>Self-hosted publishing console</small></div></div><div class="top-actions"><span class="pill {{ 'green' if worker_enabled else 'muted' }}">{{ 'Automation on' if worker_enabled else 'Automation paused' }}</span><span class="user">{{ username }}</span><form method="post" action="/logout"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="button subtle" type="submit">Sign out</button></form></div></header>
-<div class="layout"><aside class="sidebar"><nav>
-<a class="{{ 'active' if page=='overview' else '' }}" href="/">Overview</a><a class="{{ 'active' if page=='sources' else '' }}" href="/sources">Sources</a><a class="{{ 'active' if page=='queue' else '' }}" href="/queue">Upload queue</a><a class="{{ 'active' if page=='settings' else '' }}" href="/settings">Connections & settings</a><a class="{{ 'active' if page=='logs' else '' }}" href="/logs">Event log</a>
-</nav><div class="sidebar-note"><b>Rights first</b><p>Only process videos you own or are expressly authorized to redistribute. A public URL is not proof of permission.</p></div><div class="sidebar-foot">Local service · Port 8000</div></aside>
-<main class="main">
-{% if message %}<div class="alert success">{{ message }}</div>{% endif %}{% if error %}<div class="alert danger">{{ error }}</div>{% endif %}
-{% if page=='overview' %}
-<div class="page-head"><div><p class="eyebrow">OPERATIONS</p><h1>Overview</h1><p class="muted-text">Monitor source discovery and authorized publishing.</p></div><div class="button-row"><form method="post" action="/poll"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="button secondary">Poll sources now</button></form><form method="post" action="/worker/toggle"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="button {{ 'danger-button' if worker_enabled else 'primary' }}">{{ 'Pause automation' if worker_enabled else 'Resume automation' }}</button></form></div></div>
-<div class="stats-grid"><div class="stat"><span>Monitored sources</span><strong>{{ source_count }}</strong><small>Configured channels</small></div><div class="stat"><span>Awaiting approval</span><strong>{{ counts.get('queued',0) }}</strong><small>Not processed until approved</small></div><div class="stat"><span>In progress</span><strong>{{ counts.get('downloading',0) + counts.get('uploading',0) }}</strong><small>Download + upload</small></div><div class="stat"><span>Completed</span><strong>{{ counts.get('completed',0) }}</strong><small>Verified destination IDs</small></div><div class="stat"><span>Needs review</span><strong>{{ counts.get('needs_review',0) }}</strong><small>Uncertain upload outcome</small></div><div class="stat"><span>Failed</span><strong>{{ counts.get('failed',0) }}</strong><small>Intervention required</small></div></div>
-<section class="panel"><div class="panel-head"><div><h2>Worker status</h2><p class="muted-text">Automation runs independently of this browser session.</p></div><span class="pill {{ 'green' if worker_enabled else 'muted' }}">{{ 'Running' if worker_enabled else 'Paused' }}</span></div><div class="status-grid"><div><small>Last worker heartbeat</small><b>{{ worker_heartbeat|int|timestamp }}</b></div><div><small>YouTube connection</small><b>{{ 'Connected' if oauth_connected else 'Not connected' }}</b></div><div><small>Download provider</small><b>{{ 'Configured' if configured_download_key=='configured' else 'Not configured' }}</b></div><div><small>Approval policy</small><b>{{ 'Manual approval' if manual_approval else 'Automatic processing' }}</b></div></div></section>
-<section class="panel"><div class="panel-head"><div><h2>Recent jobs</h2><p class="muted-text">Newest first. Review authorization before approving.</p></div><a href="/queue" class="text-link">Open queue →</a></div>{% if jobs %}<div class="table-wrap"><table><thead><tr><th>Video</th><th>Source</th><th>Status</th><th>Updated</th></tr></thead><tbody>{% for job in jobs[:8] %}<tr><td><a target="_blank" rel="noopener" href="{{ job.source_url }}">{{ job.title }}</a><small class="cell-sub">{{ job.video_id }}</small></td><td>{{ job.channel_title }}</td><td><span class="pill status-{{ job.status }}">{{ 'Approval needed' if job.status=='queued' and not job.approved else job.status|replace('_',' ')|title }}</span></td><td>{{ job.updated_at|int|timestamp }}</td></tr>{% endfor %}</tbody></table></div>{% else %}<div class="empty">No video jobs yet. Add an authorized source to establish its baseline.</div>{% endif %}</section>
-{% elif page=='sources' %}
-<div class="page-head"><div><p class="eyebrow">CHANNELS</p><h1>Sources</h1><p class="muted-text">Monitor multiple channels you control or are authorized to republish.</p></div></div>
-<section class="panel"><h2>Add source channel</h2><form method="post" action="/sources" class="form-grid"><input type="hidden" name="csrf" value="{{ csrf }}"><label class="wide">Channel ID or channel URL<input name="channel" placeholder="UCxxxxxxxxxxxxxxxxxxxxxx or youtube.com/channel/UC…" required></label><label class="wide">Authorization note <span class="optional">(optional)</span><input name="authorization_note" placeholder="e.g. Client authorization agreement dated …"></label><label class="checkline wide"><input type="checkbox" name="confirm_rights" value="yes" required><span>I own this content or have documented permission to redistribute this channel’s eligible videos.</span></label><div class="wide"><button class="button primary">Validate and add source</button><p class="help">The first poll records a baseline and will not enqueue old feed entries. This build accepts UC channel IDs and /channel/UC… URLs.</p></div></form></section>
-<section class="panel"><div class="panel-head"><div><h2>Monitored channels</h2><p class="muted-text">Pausing keeps the configuration and existing job history.</p></div></div>{% if sources %}<div class="table-wrap"><table><thead><tr><th>Channel</th><th>Status</th><th>Last poll</th><th>Last video</th><th>Actions</th></tr></thead><tbody>{% for source in sources %}<tr><td><strong>{{ source.title }}</strong><small class="cell-sub">{{ source.channel_id }}</small>{% if source.authorization_note %}<small class="cell-sub">{{ source.authorization_note }}</small>{% endif %}</td><td><span class="pill {{ 'green' if source.enabled else 'muted' }}">{{ 'Enabled' if source.enabled else 'Paused' }}</span></td><td>{{ source.last_polled_at|int|timestamp if source.last_polled_at else 'Not polled' }}</td><td>{{ source.last_video_id or '—' }}</td><td><div class="inline-actions"><form method="post" action="/sources/{{ source.id }}/toggle"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="button tiny secondary">{{ 'Pause' if source.enabled else 'Resume' }}</button></form><form method="post" action="/sources/{{ source.id }}/remove" onsubmit="return confirm('Remove this source? Existing job history will be retained.');"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="button tiny subtle">Remove</button></form></div></td></tr>{% endfor %}</tbody></table></div>{% else %}<div class="empty">No source channels have been added.</div>{% endif %}</section>
-{% elif page=='queue' %}
-<div class="page-head"><div><p class="eyebrow">WORKFLOW</p><h1>Upload queue</h1><p class="muted-text">Every detected item requires explicit approval by default.</p></div></div>
-<section class="panel"><div class="panel-head"><div><h2>Video jobs</h2><p class="muted-text">Latest 200 jobs. An upload interrupted after session creation is held for review to prevent duplicates.</p></div></div>{% if jobs %}<div class="table-wrap"><table><thead><tr><th>Video</th><th>Source</th><th>Status / progress</th><th>Attempts / last error</th><th>Actions</th></tr></thead><tbody>{% for job in jobs %}<tr><td><a target="_blank" rel="noopener" href="{{ job.source_url }}">{{ job.title }}</a><small class="cell-sub">{{ job.video_id }} · {{ job.created_at|int|timestamp }}</small>{% if job.youtube_id %}<a class="cell-sub" target="_blank" rel="noopener" href="https://www.youtube.com/watch?v={{ job.youtube_id }}">Destination: {{ job.youtube_id }}</a>{% endif %}</td><td>{{ job.channel_title }}</td><td><span class="pill status-{{ job.status }}">{{ 'Approval needed' if job.status=='queued' and not job.approved else job.status|replace('_',' ')|title }}</span><div class="progress"><span style="width:{{ job.progress }}%"></span></div><small class="cell-sub">{{ job.stage|title }} · {{ job.progress }}%</small></td><td>{{ job.attempts }}{% if job.error %}<small class="cell-sub error-text">{{ job.error }}</small>{% endif %}</td><td><div class="inline-actions">{% if job.status in ['queued','retry'] and not job.approved %}<form method="post" action="/jobs/{{ job.id }}/approve"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="button tiny primary">Approve</button></form>{% endif %}{% if job.status not in ['completed','uploading','skipped'] %}<form method="post" action="/jobs/{{ job.id }}/skip"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="button tiny subtle">Skip</button></form>{% endif %}{% if job.status in ['failed','skipped'] %}<form method="post" action="/jobs/{{ job.id }}/retry"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="button tiny secondary">Retry</button></form>{% endif %}{% if job.status=='needs_review' %}<details><summary class="text-link">Reconcile</summary><form method="post" action="/jobs/{{ job.id }}/reconcile" class="mini-form"><input type="hidden" name="csrf" value="{{ csrf }}"><label>Destination video ID (if uploaded)<input name="destination_video_id" placeholder="YouTube video ID"></label><button name="decision" value="completed" class="button tiny primary">Record verified upload</button><button name="decision" value="resume" class="button tiny primary">Resume saved upload</button><label class="checkline"><input type="checkbox" name="verified_no_upload" value="yes"><span>I verified no video was created.</span></label><button name="decision" value="retry" class="button tiny secondary">Clear session and retry</button><button name="decision" value="failed" class="button tiny subtle">Mark failed</button></form></details>{% endif %}</div></td></tr>{% endfor %}</tbody></table></div>{% else %}<div class="empty">The queue is empty.</div>{% endif %}</section>
-{% elif page=='settings' %}
-<div class="page-head"><div><p class="eyebrow">CONFIGURATION</p><h1>Connections & settings</h1><p class="muted-text">Stored secrets are encrypted and never redisplayed.</p></div></div>
-<section class="panel"><div class="panel-head"><div><h2>YouTube destination</h2><p class="muted-text">Create a Google OAuth Web application and enable YouTube Data API v3.</p></div><span class="pill {{ 'green' if oauth_connected else 'muted' }}">{{ 'Connected' if oauth_connected else 'Disconnected' }}</span></div><p class="help">Required Google OAuth redirect URI: <code>{{ oauth_redirect_uri }}</code> This callback always uses localhost for the SSH tunnel; it is independent of BASE_URL. Register this exact URI in Google Cloud. Only the youtube.upload OAuth scope is requested.</p>{% if oauth_connected %}<form method="post" action="/oauth/disconnect"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="button subtle">Disconnect destination</button></form>{% else %}<form method="post" action="/oauth/start"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="button primary" {{ 'disabled' if not configured_google_id or not configured_google_secret else '' }}>Connect Google account</button></form>{% endif %}</section>
-<section class="panel"><h2>Import Google token.pickle</h2><p class="muted-text">Use <code>tools/token.py</code> to sign in locally and create a Google credential file, then upload it here. Import replaces the connected Google credentials.</p><form method="post" action="/oauth/import-pickle" enctype="multipart/form-data" class="form-grid" onsubmit="return confirm('Import will replace the currently connected Google credentials. Continue?');"><input type="hidden" name="csrf" value="{{ csrf }}"><label class="wide">Google token file<input type="file" name="token_file" accept=".pickle,.pkl" required></label><div class="wide"><button class="button secondary">Import token.pickle</button><p class="help">Google-auth Credentials files with the youtube.upload scope are accepted. Unknown pickle objects are rejected.</p></div></form></section>
-<section class="panel"><h2>Upload and automation rules</h2><form method="post" action="/settings" class="form-grid"><input type="hidden" name="csrf" value="{{ csrf }}"><label>Default visibility<select name="privacy_status"><option value="private" {{ 'selected' if privacy_status=='private' }}>Private (recommended)</option><option value="unlisted" {{ 'selected' if privacy_status=='unlisted' }}>Unlisted</option><option value="public" {{ 'selected' if privacy_status=='public' }}>Public</option></select></label><label>Category ID<input name="category_id" value="{{ category_id }}" maxlength="8"></label><label>Polling interval (seconds)<input name="poll_interval_seconds" type="number" min="60" max="86400" value="{{ poll_interval_seconds }}"></label><label>Maximum download size (MB)<input name="max_download_mb" type="number" min="100" max="200000" value="{{ max_download_mb }}"></label><label>Retry limit<input name="retry_limit" type="number" min="1" max="20" value="{{ retry_limit }}"></label><label>Upload tags <span class="optional">(comma separated)</span><input name="upload_tags" value="{{ upload_tags_display }}"></label><label class="wide">Description prefix<textarea name="description_prefix" rows="2">{{ description_prefix }}</textarea></label><label class="wide">Source attribution line<input name="source_attribution" value="{{ source_attribution }}"></label><label class="checkline wide"><input type="checkbox" name="manual_approval" value="true" {{ 'checked' if manual_approval }}><span>Require manual approval for every discovered video <b>(recommended)</b></span></label><div class="wide"><button class="button primary">Save rules</button><span class="help inline-help">Public publishing should be enabled only after confirming rights and testing privately.</span></div>
-<h3 class="wide section-subhead">Provider and OAuth credentials</h3><label class="wide">Video-download API key <span class="pill {{ 'green' if configured_download_key=='configured' else 'muted' }}">{{ configured_download_key|title if configured_download_key else 'Not configured' }}</span><input name="download_api_key" type="password" autocomplete="new-password" placeholder="Leave blank to keep the saved value"></label><label>Google OAuth client ID {% if configured_google_id %}<span class="pill green">Configured</span>{% endif %}<input name="google_client_id" autocomplete="off" placeholder="123…apps.googleusercontent.com"></label><label>Google OAuth client secret {% if configured_google_secret %}<span class="pill green">Configured</span>{% endif %}<input name="google_client_secret" type="password" autocomplete="new-password" placeholder="Leave blank to keep the saved value"></label><div class="wide"><button class="button secondary">Save configuration</button></div></form></section>
-<section class="panel"><h2>Safe remote access</h2><p>By default, the installer binds the dashboard to <code>127.0.0.1:8000</code>. Use an SSH tunnel rather than exposing port 8000 to the public internet. OAuth uses the localhost callback shown above and is independent of <code>BASE_URL</code>.</p></section>
-{% elif page=='logs' %}
-<div class="page-head"><div><p class="eyebrow">AUDIT TRAIL</p><h1>Event log</h1><p class="muted-text">Application, source and job events; secret values and signed download links are not logged.</p></div></div>
-<section class="panel">{% if events %}<div class="event-list">{% for event in events %}<div class="event"><span class="dot {{ event.severity }}"></span><div><strong>{{ event.message }}</strong><small>{{ event.created_at|int|timestamp }} · {{ event.severity|upper }}{% if event.job_id %} · Job {{ event.job_id }}{% endif %}{% if event.source_id %} · Source {{ event.source_id }}{% endif %}</small></div></div>{% endfor %}</div>{% else %}<div class="empty">No events recorded.</div>{% endif %}</section>
-{% endif %}
-<footer class="footer">YT Uploader · SQLite database: {{ db_path }} · Built for authorized content operations</footer>
-</main></div>
-<script src="/static/app.js" defer></script></body></html>
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M22.54 6.42a2.78 2.78 0 0 0-1.94-2C18.88 4 12 4 12 4s-6.88 0-8.6.46a2.78 2.78 0 0 0-1.94 2A29 29 0 0 0 1 11.75a29 29 0 0 0 .46 5.33A2.78 2.78 0 0 0 3.4 19c1.72.46 8.6.46 8.6.46s6.88 0 8.6-.46a2.78 2.78 0 0 0 1.94-2 29 29 0 0 0 .46-5.25 29 29 0 0 0-.46-5.33z"/><polygon points="9.75 15.02 15.5 11.75 9.75 8.48 9.75 15.02"/></svg>
+    </span>
+    <div>
+      <strong>YT Uploader</strong>
+      <small>Self-hosted publishing console</small>
+    </div>
+  </div>
+  <div class="top-actions">
+    <div class="auto-refresh-wrap" id="autoRefreshControl" title="Auto-refresh status and interval">
+      <span class="refresh-indicator" id="refreshDot"></span>
+      <select id="autoRefreshSelect" class="refresh-select" aria-label="Auto-refresh interval">
+        <option value="0">Auto-refresh: Off</option>
+        <option value="10">Auto-refresh: 10s</option>
+        <option value="30">Auto-refresh: 30s</option>
+        <option value="60">Auto-refresh: 60s</option>
+      </select>
+      <span class="refresh-timer" id="refreshTimer"></span>
+    </div>
+    <span class="pill {{ 'green pulse' if worker_enabled else 'muted' }}">
+      <span class="status-indicator"></span>
+      {{ 'Automation on' if worker_enabled else 'Automation paused' }}
+    </span>
+    <span class="user">{{ username }}</span>
+    <form method="post" action="/logout">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <button class="button subtle tiny" type="submit">Sign out</button>
+    </form>
+  </div>
+</header>
+
+<div class="layout">
+  <aside class="sidebar">
+    <nav>
+      <a class="{{ 'active' if page=='overview' else '' }}" href="/">
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect></svg>
+        <span>Overview</span>
+      </a>
+      <a class="{{ 'active' if page=='sources' else '' }}" href="/sources">
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 11a9 9 0 0 1 9 9"></path><path d="M4 4a16 16 0 0 1 16 16"></path><circle cx="5" cy="19" r="1"></circle></svg>
+        <span>Sources</span>
+        {% if source_count %}<span class="nav-badge">{{ source_count }}</span>{% endif %}
+      </a>
+      <a class="{{ 'active' if page=='queue' else '' }}" href="/queue">
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 16 12 14 15 10 15 8 12 2 12"></polyline><path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"></path></svg>
+        <span>Upload queue</span>
+        {% set pending_total = counts.get('queued',0) + counts.get('downloading',0) + counts.get('uploading',0) %}
+        {% if pending_total > 0 %}<span class="nav-badge highlight">{{ pending_total }}</span>{% endif %}
+      </a>
+      <a class="{{ 'active' if page=='settings' else '' }}" href="/settings">
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+        <span>Settings</span>
+      </a>
+      <a class="{{ 'active' if page=='logs' else '' }}" href="/logs">
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"></line><line x1="8" y1="12" x2="21" y2="12"></line><line x1="8" y1="18" x2="21" y2="18"></line><line x1="3" y1="6" x2="3.01" y2="6"></line><line x1="3" y1="12" x2="3.01" y2="12"></line><line x1="3" y1="18" x2="3.01" y2="18"></line></svg>
+        <span>Event log</span>
+      </a>
+    </nav>
+    <div class="sidebar-note">
+      <div class="note-header">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg>
+        <b>Rights First</b>
+      </div>
+      <p>Only process videos you own or are expressly authorized to redistribute. A public URL is not proof of permission.</p>
+    </div>
+    <div class="sidebar-foot">
+      <span>Local service</span>
+      <span class="foot-dot">·</span>
+      <span>Port 8000</span>
+    </div>
+  </aside>
+
+  <main class="main">
+    {% if message %}
+      <div class="alert success">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"></polyline></svg>
+        <span>{{ message }}</span>
+      </div>
+    {% endif %}
+    {% if error %}
+      <div class="alert danger">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+        <span>{{ error }}</span>
+      </div>
+    {% endif %}
+
+    {% if page=='overview' %}
+      <div class="page-head">
+        <div>
+          <p class="eyebrow">OPERATIONS</p>
+          <h1>Overview</h1>
+          <p class="muted-text">Monitor source discovery, worker operations, and publishing pipeline.</p>
+        </div>
+        <div class="button-row">
+          <form method="post" action="/poll">
+            <input type="hidden" name="csrf" value="{{ csrf }}">
+            <button class="button secondary" type="submit">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
+              Poll sources now
+            </button>
+          </form>
+          <form method="post" action="/worker/toggle">
+            <input type="hidden" name="csrf" value="{{ csrf }}">
+            <button class="button {{ 'danger-button' if worker_enabled else 'primary' }}" type="submit">
+              {% if worker_enabled %}
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="4" width="4" height="16"></rect><rect x="14" y="4" width="4" height="16"></rect></svg>
+                Pause automation
+              {% else %}
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+                Resume automation
+              {% endif %}
+            </button>
+          </form>
+        </div>
+      </div>
+
+      <div class="stats-grid">
+        <div class="stat">
+          <span>Monitored sources</span>
+          <strong>{{ source_count }}</strong>
+          <small>Configured channels</small>
+        </div>
+        <div class="stat stat-awaiting">
+          <span>Awaiting approval</span>
+          <strong>{{ counts.get('queued',0) }}</strong>
+          <small>Requires explicit authorization</small>
+        </div>
+        <div class="stat stat-active">
+          <span>In progress</span>
+          <strong>{{ counts.get('downloading',0) + counts.get('uploading',0) }}</strong>
+          <small>Download + upload</small>
+        </div>
+        <div class="stat stat-completed">
+          <span>Completed</span>
+          <strong>{{ counts.get('completed',0) }}</strong>
+          <small>Published destination IDs</small>
+        </div>
+        <div class="stat stat-review">
+          <span>Needs review</span>
+          <strong>{{ counts.get('needs_review',0) }}</strong>
+          <small>Uncertain upload outcome</small>
+        </div>
+        <div class="stat stat-failed">
+          <span>Failed / Errors</span>
+          <strong>{{ counts.get('failed',0) }}</strong>
+          <small>Intervention required</small>
+        </div>
+      </div>
+
+      <section class="panel">
+        <div class="panel-head">
+          <div>
+            <h2>Worker status</h2>
+            <p class="muted-text">Background daemon processes jobs independently of browser session.</p>
+          </div>
+          <span class="pill {{ 'green pulse' if worker_enabled else 'muted' }}">
+            <span class="status-indicator"></span>
+            {{ 'Running' if worker_enabled else 'Paused' }}
+          </span>
+        </div>
+        <div class="status-grid">
+          <div>
+            <small>Last worker heartbeat</small>
+            <b>{{ worker_heartbeat|int|timestamp }}</b>
+          </div>
+          <div>
+            <small>YouTube connection</small>
+            <b>{{ 'Connected' if oauth_connected else 'Not connected' }}</b>
+          </div>
+          <div>
+            <small>Download provider</small>
+            <b>{{ 'Configured' if configured_download_key=='configured' else 'Not configured' }}</b>
+          </div>
+          <div>
+            <small>Approval policy</small>
+            <b>{{ 'Manual approval' if manual_approval else 'Automatic processing' }}</b>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <div>
+            <h2>Recent jobs</h2>
+            <p class="muted-text">Newest discovered items. Review rights before approving.</p>
+          </div>
+          <a href="/queue" class="text-link">
+            <span>Open full queue</span>
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"></polyline></svg>
+          </a>
+        </div>
+        {% if jobs %}
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Video</th>
+                  <th>Source</th>
+                  <th>Status</th>
+                  <th>Updated</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for job in jobs[:8] %}
+                  <tr>
+                    <td>
+                      <div class="video-item-cell">
+                        <div class="thumb-container">
+                          <img src="https://i.ytimg.com/vi/{{ job.video_id }}/mqdefault.jpg" alt="" class="video-thumb" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">
+                          <div class="thumb-fallback" style="display:none;">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+                          </div>
+                          {% if job.stage and job.status in ['downloading', 'uploading'] %}
+                            <span class="thumb-badge-live">{{ job.stage }}</span>
+                          {% endif %}
+                        </div>
+                        <div class="video-info">
+                          <a class="video-title" target="_blank" rel="noopener noreferrer" href="{{ job.source_url }}">
+                            {{ job.title }}
+                          </a>
+                          <div class="video-meta-row">
+                            <span class="mono-badge">
+                              <span class="badge-label">ID:</span>
+                              <code>{{ job.video_id }}</code>
+                              <button type="button" class="copy-btn" data-copy="{{ job.video_id }}" title="Copy Video ID">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+                              </button>
+                            </span>
+                          </div>
+                          {% if job.youtube_id %}
+                            <div class="destination-row">
+                              <a class="dest-link" target="_blank" rel="noopener noreferrer" href="https://youtu.be/{{ job.youtube_id }}">
+                                <svg class="yt-icon" viewBox="0 0 24 24" fill="currentColor"><path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"/></svg>
+                                <span>youtu.be/{{ job.youtube_id }}</span>
+                                <svg class="external-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg>
+                              </a>
+                              <button type="button" class="copy-btn" data-copy="https://youtu.be/{{ job.youtube_id }}" title="Copy YouTube URL">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+                              </button>
+                            </div>
+                          {% endif %}
+                        </div>
+                      </div>
+                    </td>
+                    <td>{{ job.channel_title }}</td>
+                    <td>
+                      <span class="pill status-{{ job.status }}">
+                        {{ 'Approval needed' if job.status=='queued' and not job.approved else job.status|replace('_',' ')|title }}
+                      </span>
+                      {% if job.status in ['downloading', 'uploading'] %}
+                        <div class="progress"><span style="width:{{ job.progress }}%"></span></div>
+                        <small class="cell-sub">{{ job.stage|title }} · {{ job.progress }}%</small>
+                      {% endif %}
+                    </td>
+                    <td>{{ job.updated_at|int|timestamp }}</td>
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        {% else %}
+          <div class="empty">No video jobs yet. Add an authorized source channel to establish its baseline.</div>
+        {% endif %}
+      </section>
+
+    {% elif page=='sources' %}
+      <div class="page-head">
+        <div>
+          <p class="eyebrow">CHANNELS</p>
+          <h1>Sources</h1>
+          <p class="muted-text">Monitor YouTube channels you control or are authorized to republish.</p>
+        </div>
+      </div>
+
+      <section class="panel">
+        <h2>Add source channel</h2>
+        <form method="post" action="/sources" class="form-grid">
+          <input type="hidden" name="csrf" value="{{ csrf }}">
+          <label class="wide">
+            Channel ID or channel URL
+            <input name="channel" placeholder="UCxxxxxxxxxxxxxxxxxxxxxx or youtube.com/channel/UC…" required>
+          </label>
+          <label class="wide">
+            Authorization note <span class="optional">(optional)</span>
+            <input name="authorization_note" placeholder="e.g. Client authorization agreement dated …">
+          </label>
+          <label class="checkline wide">
+            <input type="checkbox" name="confirm_rights" value="yes" required>
+            <span>I own this content or have documented permission to redistribute this channel’s eligible videos.</span>
+          </label>
+          <div class="wide">
+            <button class="button primary" type="submit">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+              Validate and add source
+            </button>
+            <p class="help">The first poll records a baseline and will not enqueue old feed entries. Accepts UC channel IDs and /channel/UC… URLs.</p>
+          </div>
+        </form>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <div>
+            <h2>Monitored channels</h2>
+            <p class="muted-text">Pausing keeps the configuration and existing job history.</p>
+          </div>
+        </div>
+        {% if sources %}
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Channel</th>
+                  <th>Status</th>
+                  <th>Last poll</th>
+                  <th>Last video</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for source in sources %}
+                  <tr>
+                    <td>
+                      <strong>{{ source.title }}</strong>
+                      <div class="video-meta-row" style="margin-top:4px;">
+                        <span class="mono-badge">
+                          <code>{{ source.channel_id }}</code>
+                          <button type="button" class="copy-btn" data-copy="{{ source.channel_id }}" title="Copy Channel ID">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+                          </button>
+                        </span>
+                      </div>
+                      {% if source.authorization_note %}
+                        <small class="cell-sub" style="color:#a5b4fc;">{{ source.authorization_note }}</small>
+                      {% endif %}
+                    </td>
+                    <td>
+                      <span class="pill {{ 'green' if source.enabled else 'muted' }}">
+                        {{ 'Enabled' if source.enabled else 'Paused' }}
+                      </span>
+                    </td>
+                    <td>{{ source.last_polled_at|int|timestamp if source.last_polled_at else 'Not polled' }}</td>
+                    <td>
+                      {% if source.last_video_id %}
+                        <span class="mono-badge">
+                          <code>{{ source.last_video_id }}</code>
+                          <button type="button" class="copy-btn" data-copy="{{ source.last_video_id }}" title="Copy Video ID">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+                          </button>
+                        </span>
+                      {% else %}
+                        —
+                      {% endif %}
+                    </td>
+                    <td>
+                      <div class="inline-actions">
+                        <form method="post" action="/sources/{{ source.id }}/toggle">
+                          <input type="hidden" name="csrf" value="{{ csrf }}">
+                          <button class="button tiny secondary" type="submit">{{ 'Pause' if source.enabled else 'Resume' }}</button>
+                        </form>
+                        <form method="post" action="/sources/{{ source.id }}/remove" onsubmit="return confirm('Remove this source? Existing job history will be retained.');">
+                          <input type="hidden" name="csrf" value="{{ csrf }}">
+                          <button class="button tiny subtle" type="submit">Remove</button>
+                        </form>
+                      </div>
+                    </td>
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        {% else %}
+          <div class="empty">No source channels have been added yet.</div>
+        {% endif %}
+      </section>
+
+    {% elif page=='queue' %}
+      <div class="page-head">
+        <div>
+          <p class="eyebrow">WORKFLOW</p>
+          <h1>Upload queue</h1>
+          <p class="muted-text">Real-time status of discovered, downloading, and published items.</p>
+        </div>
+      </div>
+
+      <section class="panel">
+        <div class="panel-head">
+          <div>
+            <h2>Video jobs</h2>
+            <p class="muted-text">Latest 200 jobs. Items interrupted during upload are held for safety reconciliation.</p>
+          </div>
+        </div>
+
+        <div class="queue-toolbar">
+          <div class="search-box">
+            <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+            <input type="text" id="queueSearchInput" placeholder="Filter jobs by title, video ID, channel, or YouTube destination..." autocomplete="off">
+            <button type="button" id="clearSearchBtn" class="clear-btn" style="display:none;" title="Clear search">×</button>
+          </div>
+
+          <div class="filter-tabs" id="queueFilterTabs">
+            <button type="button" class="tab-btn active" data-filter="all">
+              All <span class="tab-badge" id="badgeAll">{{ jobs|length }}</span>
+            </button>
+            <button type="button" class="tab-btn" data-filter="queued">
+              Pending Approval <span class="tab-badge" id="badgeQueued">{{ counts.get('queued',0) }}</span>
+            </button>
+            <button type="button" class="tab-btn" data-filter="active">
+              Active <span class="tab-badge" id="badgeActive">{{ counts.get('downloading',0) + counts.get('uploading',0) }}</span>
+            </button>
+            <button type="button" class="tab-btn" data-filter="completed">
+              Completed <span class="tab-badge" id="badgeCompleted">{{ counts.get('completed',0) }}</span>
+            </button>
+            <button type="button" class="tab-btn" data-filter="needs_review">
+              Needs Review <span class="tab-badge" id="badgeNeedsReview">{{ counts.get('needs_review',0) }}</span>
+            </button>
+            <button type="button" class="tab-btn" data-filter="failed">
+              Failed / Skipped <span class="tab-badge" id="badgeFailed">{{ counts.get('failed',0) + counts.get('skipped',0) }}</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="results-info" id="resultsInfo">
+          Showing <span id="showingCount">{{ jobs|length }}</span> of {{ jobs|length }} jobs
+        </div>
+
+        <div id="noResultsMsg" class="empty" style="display:none;">
+          No video jobs match your filter criteria.
+        </div>
+
+        {% if jobs %}
+          <div class="table-wrap" id="queueTableWrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Video</th>
+                  <th>Source</th>
+                  <th>Status / Progress</th>
+                  <th>Attempts / Last error</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="queueTableBody">
+                {% for job in jobs %}
+                  <tr class="job-row"
+                      data-status="{{ job.status }}"
+                      data-approved="{{ 'true' if job.approved else 'false' }}"
+                      data-title="{{ job.title|e }}"
+                      data-videoid="{{ job.video_id }}"
+                      data-ytid="{{ job.youtube_id or '' }}"
+                      data-channel="{{ job.channel_title|e }}">
+                    <td>
+                      <div class="video-item-cell">
+                        <div class="thumb-container">
+                          <img src="https://i.ytimg.com/vi/{{ job.video_id }}/mqdefault.jpg" alt="" class="video-thumb" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">
+                          <div class="thumb-fallback" style="display:none;">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+                          </div>
+                          {% if job.stage and job.status in ['downloading', 'uploading'] %}
+                            <span class="thumb-badge-live">{{ job.stage }}</span>
+                          {% endif %}
+                        </div>
+                        <div class="video-info">
+                          <a class="video-title" target="_blank" rel="noopener noreferrer" href="{{ job.source_url }}" title="{{ job.title }}">
+                            {{ job.title }}
+                          </a>
+                          <div class="video-meta-row">
+                            <span class="mono-badge">
+                              <span class="badge-label">ID:</span>
+                              <code>{{ job.video_id }}</code>
+                              <button type="button" class="copy-btn" data-copy="{{ job.video_id }}" title="Copy Video ID">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+                              </button>
+                            </span>
+                            <span class="meta-dot">·</span>
+                            <span class="meta-time" title="{{ job.created_at|int|timestamp }}">{{ job.created_at|int|timestamp }}</span>
+                          </div>
+                          {% if job.youtube_id %}
+                            <div class="destination-row">
+                              <a class="dest-link" target="_blank" rel="noopener noreferrer" href="https://youtu.be/{{ job.youtube_id }}" title="Open published video on YouTube">
+                                <svg class="yt-icon" viewBox="0 0 24 24" fill="currentColor"><path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"/></svg>
+                                <span>youtu.be/{{ job.youtube_id }}</span>
+                                <svg class="external-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg>
+                              </a>
+                              <button type="button" class="copy-btn" data-copy="https://youtu.be/{{ job.youtube_id }}" title="Copy YouTube Link">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+                              </button>
+                            </div>
+                          {% endif %}
+                        </div>
+                      </div>
+                    </td>
+                    <td>
+                      <strong>{{ job.channel_title }}</strong>
+                    </td>
+                    <td>
+                      <span class="pill status-{{ job.status }}">
+                        {{ 'Approval needed' if job.status=='queued' and not job.approved else job.status|replace('_',' ')|title }}
+                      </span>
+                      <div class="progress">
+                        <span style="width:{{ job.progress }}%"></span>
+                      </div>
+                      <small class="cell-sub">{{ job.stage|title }} · {{ job.progress }}%</small>
+                    </td>
+                    <td>
+                      <span>{{ job.attempts }} attempt{{ '' if job.attempts == 1 else 's' }}</span>
+                      {% if job.error %}
+                        <div class="error-text" title="{{ job.error }}">{{ job.error }}</div>
+                      {% endif %}
+                    </td>
+                    <td>
+                      <div class="inline-actions">
+                        {% if job.status in ['queued','retry'] and not job.approved %}
+                          <form method="post" action="/jobs/{{ job.id }}/approve">
+                            <input type="hidden" name="csrf" value="{{ csrf }}">
+                            <button class="button tiny primary" type="submit">Approve</button>
+                          </form>
+                        {% endif %}
+                        {% if job.status not in ['completed','uploading','skipped'] %}
+                          <form method="post" action="/jobs/{{ job.id }}/skip">
+                            <input type="hidden" name="csrf" value="{{ csrf }}">
+                            <button class="button tiny subtle" type="submit">Skip</button>
+                          </form>
+                        {% endif %}
+                        {% if job.status in ['failed','skipped'] %}
+                          <form method="post" action="/jobs/{{ job.id }}/retry">
+                            <input type="hidden" name="csrf" value="{{ csrf }}">
+                            <button class="button tiny secondary" type="submit">Retry</button>
+                          </form>
+                        {% endif %}
+                        {% if job.status=='needs_review' %}
+                          <details>
+                            <summary class="text-link">Reconcile ▾</summary>
+                            <form method="post" action="/jobs/{{ job.id }}/reconcile" class="mini-form">
+                              <input type="hidden" name="csrf" value="{{ csrf }}">
+                              <label>
+                                Destination video ID (if uploaded)
+                                <input name="destination_video_id" placeholder="YouTube video ID">
+                              </label>
+                              <button name="decision" value="completed" class="button tiny primary" type="submit">Record verified upload</button>
+                              <button name="decision" value="resume" class="button tiny primary" type="submit">Resume saved upload</button>
+                              <label class="checkline">
+                                <input type="checkbox" name="verified_no_upload" value="yes">
+                                <span>I verified no video was created.</span>
+                              </label>
+                              <button name="decision" value="retry" class="button tiny secondary" type="submit">Clear session and retry</button>
+                              <button name="decision" value="failed" class="button tiny subtle" type="submit">Mark failed</button>
+                            </form>
+                          </details>
+                        {% endif %}
+                      </div>
+                    </td>
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        {% else %}
+          <div class="empty">The upload queue is empty.</div>
+        {% endif %}
+      </section>
+
+    {% elif page=='settings' %}
+      <div class="page-head">
+        <div>
+          <p class="eyebrow">CONFIGURATION</p>
+          <h1>Connections & settings</h1>
+          <p class="muted-text">Stored secrets are encrypted at rest and never redisplayed in plain text.</p>
+        </div>
+      </div>
+
+      <section class="panel">
+        <div class="panel-head">
+          <div>
+            <h2>YouTube destination</h2>
+            <p class="muted-text">Create a Google OAuth Web application and enable YouTube Data API v3.</p>
+          </div>
+          <span class="pill {{ 'green' if oauth_connected else 'muted' }}">
+            {{ 'Connected' if oauth_connected else 'Disconnected' }}
+          </span>
+        </div>
+        <p class="help">
+          Required Google OAuth redirect URI:
+          <code>{{ oauth_redirect_uri }}</code>
+          <button type="button" class="copy-btn" data-copy="{{ oauth_redirect_uri }}" title="Copy OAuth redirect URI">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+          </button>
+          <br>This callback always uses localhost for SSH port-forwarding tunnels and is independent of BASE_URL. Register this exact URI in Google Cloud. Only the <code>youtube.upload</code> scope is requested.
+        </p>
+        <div style="margin-top:14px;">
+          {% if oauth_connected %}
+            <form method="post" action="/oauth/disconnect">
+              <input type="hidden" name="csrf" value="{{ csrf }}">
+              <button class="button subtle" type="submit">Disconnect destination</button>
+            </form>
+          {% else %}
+            <form method="post" action="/oauth/start">
+              <input type="hidden" name="csrf" value="{{ csrf }}">
+              <button class="button primary" type="submit" {{ 'disabled' if not configured_google_id or not configured_google_secret else '' }}>
+                Connect Google account
+              </button>
+            </form>
+          {% endif %}
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Import Google token.pickle</h2>
+        <p class="muted-text">Use <code>tools/token.py</code> to sign in locally and create a Google credential file, then upload it here. Import replaces currently connected credentials.</p>
+        <form method="post" action="/oauth/import-pickle" enctype="multipart/form-data" class="form-grid" onsubmit="return confirm('Import will replace the currently connected Google credentials. Continue?');">
+          <input type="hidden" name="csrf" value="{{ csrf }}">
+          <label class="wide">
+            Google token file (.pickle / .pkl)
+            <input type="file" name="token_file" accept=".pickle,.pkl" required>
+          </label>
+          <div class="wide">
+            <button class="button secondary" type="submit">Import token.pickle</button>
+            <p class="help">Valid Google-auth Credentials files with the <code>youtube.upload</code> scope are accepted.</p>
+          </div>
+        </form>
+      </section>
+
+      <section class="panel">
+        <h2>Upload and automation rules</h2>
+        <form method="post" action="/settings" class="form-grid">
+          <input type="hidden" name="csrf" value="{{ csrf }}">
+          <label>
+            Default visibility
+            <select name="privacy_status">
+              <option value="private" {{ 'selected' if privacy_status=='private' }}>Private (recommended)</option>
+              <option value="unlisted" {{ 'selected' if privacy_status=='unlisted' }}>Unlisted</option>
+              <option value="public" {{ 'selected' if privacy_status=='public' }}>Public</option>
+            </select>
+          </label>
+          <label>
+            Category ID
+            <input name="category_id" value="{{ category_id }}" maxlength="8">
+          </label>
+          <label>
+            Polling interval (seconds)
+            <input name="poll_interval_seconds" type="number" min="60" max="86400" value="{{ poll_interval_seconds }}">
+          </label>
+          <label>
+            Maximum download size (MB)
+            <input name="max_download_mb" type="number" min="100" max="200000" value="{{ max_download_mb }}">
+          </label>
+          <label>
+            Retry limit
+            <input name="retry_limit" type="number" min="1" max="20" value="{{ retry_limit }}">
+          </label>
+          <label>
+            Upload tags <span class="optional">(comma separated)</span>
+            <input name="upload_tags" value="{{ upload_tags_display }}">
+          </label>
+          <label class="wide">
+            Description prefix
+            <textarea name="description_prefix" rows="2">{{ description_prefix }}</textarea>
+          </label>
+          <label class="wide">
+            Source attribution line
+            <input name="source_attribution" value="{{ source_attribution }}">
+          </label>
+          <label class="checkline wide">
+            <input type="checkbox" name="manual_approval" value="true" {{ 'checked' if manual_approval }}>
+            <span>Require manual approval for every discovered video <b>(recommended)</b></span>
+          </label>
+          <div class="wide">
+            <button class="button primary" type="submit">Save rules</button>
+            <span class="help inline-help">Public publishing should only be enabled after verifying content authorization and testing privately.</span>
+          </div>
+
+          <h3 class="wide section-subhead">Provider and OAuth credentials</h3>
+          <label class="wide">
+            Video-download API key
+            <span class="pill {{ 'green' if configured_download_key=='configured' else 'muted' }}">{{ configured_download_key|title if configured_download_key else 'Not configured' }}</span>
+            <input name="download_api_key" type="password" autocomplete="new-password" placeholder="Leave blank to keep the saved value">
+          </label>
+          <label>
+            Google OAuth client ID
+            {% if configured_google_id %}<span class="pill green">Configured</span>{% endif %}
+            <input name="google_client_id" autocomplete="off" placeholder="123…apps.googleusercontent.com">
+          </label>
+          <label>
+            Google OAuth client secret
+            {% if configured_google_secret %}<span class="pill green">Configured</span>{% endif %}
+            <input name="google_client_secret" type="password" autocomplete="new-password" placeholder="Leave blank to keep the saved value">
+          </label>
+          <div class="wide">
+            <button class="button secondary" type="submit">Save configuration</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="panel">
+        <h2>Safe remote access</h2>
+        <p>By default, the installer binds the dashboard to <code>127.0.0.1:8000</code>. Use an SSH tunnel rather than exposing port 8000 to the public internet. OAuth uses the localhost callback shown above and is independent of <code>BASE_URL</code>.</p>
+      </section>
+
+    {% elif page=='logs' %}
+      <div class="page-head">
+        <div>
+          <p class="eyebrow">AUDIT TRAIL</p>
+          <h1>Event log</h1>
+          <p class="muted-text">Application, source, and job events. Secret values and signed download URLs are never logged.</p>
+        </div>
+      </div>
+
+      <section class="panel">
+        <div class="panel-head">
+          <div>
+            <h2>Recorded events</h2>
+            <p class="muted-text">Latest 100 audit entries.</p>
+          </div>
+          <div class="filter-tabs" id="logFilterTabs">
+            <button type="button" class="tab-btn active" data-severity="all">All</button>
+            <button type="button" class="tab-btn" data-severity="info">Info</button>
+            <button type="button" class="tab-btn" data-severity="warning">Warning</button>
+            <button type="button" class="tab-btn" data-severity="error">Error</button>
+          </div>
+        </div>
+
+        {% if events %}
+          <div class="event-list" id="eventList">
+            {% for event in events %}
+              <div class="event-item" data-severity="{{ event.severity }}">
+                <span class="dot {{ event.severity }}"></span>
+                <div>
+                  <strong>{{ event.message }}</strong>
+                  <small>
+                    {{ event.created_at|int|timestamp }} · {{ event.severity|upper }}
+                    {% if event.job_id %} · Job #{{ event.job_id }}{% endif %}
+                    {% if event.source_id %} · Source #{{ event.source_id }}{% endif %}
+                  </small>
+                </div>
+              </div>
+            {% endfor %}
+          </div>
+          <div id="logsFilterEmpty" class="empty" style="display:none;">
+            No events match the selected severity filter.
+          </div>
+        {% else %}
+          <div class="empty">No events recorded yet.</div>
+        {% endif %}
+      </section>
+    {% endif %}
+
+    <footer class="footer">
+      <span>YT Uploader · Self-hosted content publishing engine</span>
+      <span>SQLite: <code>{{ db_path }}</code></span>
+    </footer>
+  </main>
+</div>
+
+<script src="/static/app.js" defer></script>
+</body>
+</html>
