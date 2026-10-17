@@ -8,7 +8,7 @@ from typing import Any
 
 from .config import settings
 from .db import Database
-from .integrations import DownloadProvider, IntegrationError, YouTubeUploader, fetch_channel_feed, download_best_thumbnail
+from .integrations import DownloadProvider, IntegrationError, YouTubeUploader, fetch_channel_feed, download_best_thumbnail, PROVIDER_BASE
 from .security import decrypt_secret, encrypt_secret, redact_sensitive
 from .ai_shorts import DeepgramClient, KineticSubtitleGenerator, ViralHookDetector
 from .video_engine import VideoEngine
@@ -163,6 +163,19 @@ class Worker:
         value, is_secret = self.db.get_setting(key)
         return decrypt_secret(value) if value and is_secret else value
 
+    def _get_download_provider(self) -> DownloadProvider:
+        api_key = self._secret_setting("download_api_key")
+        if not api_key:
+            raise IntegrationError("Configure the video-download API key before processing jobs")
+        base_url = self.db.get_setting("download_provider_url")[0] or PROVIDER_BASE
+        return DownloadProvider(
+            api_key,
+            settings.request_timeout,
+            int(self.db.get_setting("max_download_bytes")[0] or settings.max_download_bytes),
+            settings.downloads_path,
+            base_url=base_url,
+        )
+
     def _process(self, job: dict[str, Any]) -> None:
         if job.get("job_type") == "short":
             self._process_short(job)
@@ -178,10 +191,7 @@ class Worker:
                 if candidate.is_relative_to(download_root) and candidate.is_file() and candidate.stat().st_size > 0:
                     media_path = candidate
             if media_path is None:
-                api_key = self._secret_setting("download_api_key")
-                if not api_key:
-                    raise IntegrationError("Configure the video-download API key before processing jobs")
-                provider = DownloadProvider(api_key, settings.request_timeout, int(self.db.get_setting("max_download_bytes")[0] or settings.max_download_bytes), settings.downloads_path)
+                provider = self._get_download_provider()
                 provider_job_id = job.get("provider_job_id")
                 if not provider_job_id:
                     self.db.event("Download started", job_id=job_id)
@@ -307,11 +317,7 @@ class Worker:
                 if not groq_key and not gemini_key:
                     raise IntegrationError("Configure Groq or Gemini API key in Settings for AI hook detection")
 
-                api_key = self._secret_setting("download_api_key")
-                if not api_key:
-                    raise IntegrationError("Configure the video-download API key before processing jobs")
-                provider = DownloadProvider(api_key, settings.request_timeout, int(self.db.get_setting("max_download_bytes")[0] or settings.max_download_bytes), settings.downloads_path)
-
+                provider = self._get_download_provider()
                 audio_job_id, _ = provider.create_job(job["source_url"], format_id="mp3")
                 audio_path = provider.wait_and_download(audio_job_id, job_id,
                                                        progress=lambda p: self._update_progress(job_id, int(p * 0.3), "analyzing_audio"))
@@ -372,9 +378,7 @@ class Worker:
                                 (int(time.time()), job_id))
                 self.db.event(f"Downloading source video and rendering 9:16 vertical Short ({clip_start:.1f}s -> {clip_end:.1f}s)", job_id=job_id)
 
-                api_key = self._secret_setting("download_api_key")
-                provider = DownloadProvider(api_key, settings.request_timeout, int(self.db.get_setting("max_download_bytes")[0] or settings.max_download_bytes), settings.downloads_path)
-
+                provider = self._get_download_provider()
                 video_job_id, _ = provider.create_job(job["source_url"], format_id="1080")
                 raw_video = provider.wait_and_download(video_job_id, job_id,
                                                       progress=lambda p: self._update_progress(job_id, 50 + int(p * 0.2), "rendering_short"))

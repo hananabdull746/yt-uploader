@@ -22,7 +22,9 @@ load_dotenv()
 
 from .config import settings
 from .db import Database
-from .integrations import IntegrationError, fetch_channel_feed, import_google_credentials_pickle, normalize_channel_id, oauth_authorization_url, oauth_exchange, YouTubeUploader
+from .integrations import (IntegrationError, fetch_channel_feed, import_google_credentials_pickle,
+                           normalize_channel_id, oauth_authorization_url, oauth_exchange, YouTubeUploader,
+                           normalize_youtube_url, extract_youtube_id, PROVIDER_BASE)
 from .security import decrypt_secret, encrypt_secret, hash_password, login_allowed, new_csrf_token, record_login_failure, clear_login_failures, valid_csrf, verify_password, redact_sensitive
 from .worker import Worker
 
@@ -301,6 +303,7 @@ def render_page(request: Request, page: str, message: str | None = None, error: 
         "worker_enabled": WORKER.enabled(), "worker_heartbeat": WORKER.last_heartbeat,
         "db_path": str(settings.database_path),
         "configured_download_key": public_setting("download_api_key"),
+        "download_provider_url": setting_value("download_provider_url", PROVIDER_BASE),
         "configured_google_id": public_setting("google_client_id"),
         "configured_google_secret": public_setting("google_client_secret"),
         "configured_deepgram_key": public_setting("deepgram_api_key"),
@@ -511,9 +514,8 @@ def create_short_from_url(request: Request, url: str = Form(...),
     if confirm_rights != "yes":
         return RedirectResponse("/shorts?error=Please%20confirm%20authorization%20before%20creating%20Shorts", status_code=303)
 
-    clean_url = url.strip()
-    vid_match = re.search(r"(?:v=|\/|be\/)([0-9A-Za-z_-]{11})", clean_url)
-    video_id = vid_match.group(1) if vid_match else f"vid_{int(time.time())}"
+    clean_url = normalize_youtube_url(url)
+    video_id = extract_youtube_id(clean_url) or f"vid_{int(time.time())}"
     short_vid_id = f"{video_id}_short_{int(time.time())}"
     now = int(time.time())
 
@@ -545,7 +547,9 @@ def repurpose_job(job_id: int, request: Request, csrf: str = Form(...), user: di
         return RedirectResponse("/queue?error=Job%20not%20found", status_code=303)
 
     now = int(time.time())
-    short_vid_id = f"{job['video_id']}_short_{int(time.time())}"
+    source_url = normalize_youtube_url(job["source_url"])
+    video_id = extract_youtube_id(source_url) or job["video_id"]
+    short_vid_id = f"{video_id}_short_{int(time.time())}"
     render_opts = {
         "num_clips": 5,
         "layout": "facetrack",
@@ -559,7 +563,7 @@ def repurpose_job(job_id: int, request: Request, csrf: str = Form(...), user: di
         "INSERT INTO jobs(source_id, source_channel_id, source_title, video_id, source_url, title, status, approved, job_type, parent_video_id, user_id, render_options, created_at, updated_at) "
         "VALUES(?,?,?,?,?,'queued',1,'short',?,?,?,?,?)",
         (job.get("source_id"), job.get("source_channel_id"), job.get("source_title", ""),
-         short_vid_id, job["source_url"], f"[Short] {job['title']}", job["video_id"], user.get("id"), json.dumps(render_opts), now, now)
+         short_vid_id, source_url, f"[Short] {job['title']}", video_id, user.get("id"), json.dumps(render_opts), now, now)
     )
     DB.event(f"Job {job_id} repurposed to Shorts batch (5 clips) by {user['username']}")
     return RedirectResponse("/shorts?message=Video%20queued%20for%20Shorts%20repurposing%20(5%20clips)", status_code=303)
@@ -615,7 +619,8 @@ def reset_user_password(user_id: int, request: Request, new_password: str = Form
 def save_settings(request: Request, csrf: str = Form(...), privacy_status: str = Form("private"), category_id: str = Form("22"),
                   description_prefix: str = Form(""), source_attribution: str = Form(""), upload_tags: str = Form(""),
                   retry_limit: int = Form(5), poll_interval_seconds: int = Form(300), max_download_mb: int = Form(4096),
-                  manual_approval: str | None = Form(None), download_api_key: str = Form(""), google_client_id: str = Form(""),
+                  manual_approval: str | None = Form(None), download_api_key: str = Form(""),
+                  download_provider_url: str = Form(""), google_client_id: str = Form(""),
                   google_client_secret: str = Form(""), deepgram_api_key: str = Form(""), groq_api_key: str = Form(""),
                   gemini_api_key: str = Form(""), shorts_layout: str = Form("blur"), shorts_font: str = Form("Montserrat"),
                   shorts_caption_style: str = Form("hormozi_yellow"), shorts_auto_repurpose: str | None = Form(None),
@@ -639,6 +644,7 @@ def save_settings(request: Request, csrf: str = Form(...), privacy_status: str =
         "poll_interval_seconds": str(poll_interval_seconds),
         "max_download_bytes": str(max_download_mb * 1024 * 1024),
         "manual_approval": "true" if manual_approval else "false",
+        "download_provider_url": download_provider_url.strip() or PROVIDER_BASE,
         "shorts_layout": shorts_layout if shorts_layout in ("blur", "crop") else "blur",
         "shorts_font": shorts_font if shorts_font in ("Montserrat", "Anton", "Impact") else "Montserrat",
         "shorts_caption_style": shorts_caption_style if shorts_caption_style in ("hormozi_yellow", "viral_mint", "neon_cyan") else "hormozi_yellow",

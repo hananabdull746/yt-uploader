@@ -26,7 +26,7 @@ from google_auth_oauthlib.flow import Flow
 
 YOUTUBE_SCOPE = "https://www.googleapis.com/auth/youtube.upload"
 YOUTUBE_FEED = "https://www.youtube.com/feeds/videos.xml?channel_id={}"
-PROVIDER_BASE = "https://p.savenow.to"
+PROVIDER_BASE = os.getenv("DOWNLOAD_PROVIDER_URL", "https://p.savenow.to").rstrip("/")
 ALLOWED_DOWNLOAD_HOSTS = {"p.savenow.to", "savenow.to"}
 
 
@@ -97,6 +97,29 @@ class FeedVideo:
     description: str
     published: str
     channel_title: str
+
+
+def extract_youtube_id(url: str) -> str | None:
+    """Extract standard 11-character YouTube video ID from any format URL."""
+    if not url:
+        return None
+    patterns = [
+        r"(?:v=|\/vi\/|\/v\/|youtu\.be\/|\/shorts\/|\/embed\/)([0-9A-Za-z_-]{11})",
+        r"^([0-9A-Za-z_-]{11})$",
+    ]
+    for pattern in patterns:
+        m = re.search(pattern, url.strip())
+        if m:
+            return m.group(1)
+    return None
+
+
+def normalize_youtube_url(url: str) -> str:
+    """Ensure YouTube URLs are cleanly formatted as https://www.youtube.com/watch?v={video_id} without tracking, timestamps, or playlist params."""
+    vid = extract_youtube_id(url)
+    if vid:
+        return f"https://www.youtube.com/watch?v={vid}"
+    return url.strip()
 
 
 def normalize_channel_id(value: str) -> str:
@@ -175,32 +198,51 @@ class DownloadProvider:
         self.base_url = base_url.rstrip("/")
         self.poll_interval, self.max_polls = poll_interval, max_polls
 
-    def create_job(self, video_url: str, format_id: str = "1080") -> tuple[str, str]:
-        try:
-            response = requests.get(f"{self.base_url}/ajax/download.php",
-                                   params={"url": video_url, "format": format_id, "apikey": self.api_key,
-                                           "allow_extended_duration": "0"}, timeout=self.timeout)
-        except requests.RequestException as exc:
-            raise IntegrationError(f"Download provider request failed: {exc}", retryable=True) from exc
-        if response.status_code >= 500 or response.status_code == 429:
-            raise IntegrationError(f"Download provider returned HTTP {response.status_code}", retryable=True)
-        if not response.ok:
-            error_detail = ""
+    def create_job(self, video_url: str, format_id: str = "1080", allow_extended_duration: str = "0") -> tuple[str, str]:
+        canonical_url = normalize_youtube_url(video_url)
+        formats = [format_id]
+        if format_id == "1080":
+            formats = ["1080", "720", "480", "360"]
+        elif format_id == "mp3":
+            formats = ["mp3", "m4a", "aac"]
+
+        last_error = ""
+        for fmt in formats:
             try:
-                err_data = response.json()
-                error_detail = f": {err_data.get('message') or err_data.get('errors') or response.text}"
-            except Exception:
-                error_detail = f": {response.text[:200]}" if response.text else ""
-            raise IntegrationError(f"Download provider rejected the request (HTTP {response.status_code}){error_detail}")
-        try:
-            data = response.json()
-        except ValueError as exc:
-            raise IntegrationError("Download provider returned invalid JSON", retryable=True) from exc
-        job_id = str(data.get("id", ""))
-        if data.get("success") not in (True, 1, "1") or not job_id:
-            reason = data.get("text") or data.get("message") or "Provider did not return a job id"
-            raise IntegrationError(str(reason)[:500])
-        return job_id, str((data.get("info") or {}).get("title") or "")
+                response = requests.get(f"{self.base_url}/ajax/download.php",
+                                       params={"url": canonical_url, "format": fmt, "apikey": self.api_key,
+                                               "allow_extended_duration": allow_extended_duration}, timeout=self.timeout)
+            except requests.RequestException as exc:
+                raise IntegrationError(f"Download provider request failed: {exc}", retryable=True) from exc
+            if response.status_code >= 500 or response.status_code == 429:
+                raise IntegrationError(f"Download provider returned HTTP {response.status_code}", retryable=True)
+            if not response.ok:
+                error_detail = ""
+                try:
+                    err_data = response.json()
+                    error_detail = f": {err_data.get('message') or err_data.get('errors') or response.text}"
+                except Exception:
+                    error_detail = f": {response.text[:200]}" if response.text else ""
+                raise IntegrationError(f"Download provider rejected the request (HTTP {response.status_code}){error_detail}")
+            try:
+                data = response.json()
+            except ValueError as exc:
+                raise IntegrationError("Download provider returned invalid JSON", retryable=True) from exc
+            job_id = str(data.get("id", ""))
+            if data.get("success") in (True, 1, "1") and job_id:
+                return job_id, str((data.get("info") or {}).get("title") or "")
+            raw_reason = str(data.get("text") or data.get("message") or "Provider did not return a job id")
+            last_error = raw_reason
+
+        if "requires login" in last_error.lower():
+            raise IntegrationError(
+                f"Video-Download API rejected video: '{last_error}'. "
+                "This YouTube video requires account authentication (it is likely Age-Restricted 18+, private, unlisted/restricted, or members-only). "
+                "Video-Download API cannot download age-restricted or gated videos without YouTube credentials. "
+                "Please submit a public, non-age-restricted YouTube video.",
+                retryable=False
+            )
+        raise IntegrationError(str(last_error)[:500])
 
     def poll_job(self, provider_job_id: str) -> str | None:
         try:
@@ -220,7 +262,15 @@ class DownloadProvider:
             return None
         url = data.get("download_url")
         if data.get("success") not in (True, 1, "1") or not url:
-            raise IntegrationError(str(data.get("text") or data.get("message") or "Provider marked download unsuccessful")[:500])
+            reason = str(data.get("text") or data.get("message") or "Provider marked download unsuccessful")
+            if "requires login" in reason.lower():
+                raise IntegrationError(
+                    f"Video-Download API failed: '{reason}'. "
+                    "This YouTube video requires account authentication (likely Age-Restricted 18+, private, or members-only). "
+                    "Please submit a public, non-age-restricted YouTube video.",
+                    retryable=False
+                )
+            raise IntegrationError(reason[:500])
         parsed = urlparse(str(url))
         if parsed.scheme != "https" or not is_allowed_download_host(parsed.hostname):
             raise IntegrationError(f"Provider returned an untrusted download URL ({parsed.hostname}); only HTTPS URLs from savenow.to are accepted")

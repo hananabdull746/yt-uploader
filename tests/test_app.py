@@ -785,4 +785,59 @@ def test_video_engine_face_tracking_resilience(tmp_path):
     assert ratio == 0.5
 
 
+def test_normalize_youtube_url():
+    from app.integrations import normalize_youtube_url, extract_youtube_id
+
+    # standard watch URL with tracking and query params
+    url1 = "https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=120s&list=PL12345678"
+    assert extract_youtube_id(url1) == "dQw4w9WgXcQ"
+    assert normalize_youtube_url(url1) == "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+
+    # short youtu.be URL with tracking param
+    url2 = "https://youtu.be/dQw4w9WgXcQ?si=abcdef12345"
+    assert extract_youtube_id(url2) == "dQw4w9WgXcQ"
+    assert normalize_youtube_url(url2) == "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+
+    # shorts URL
+    url3 = "https://youtube.com/shorts/dQw4w9WgXcQ?feature=share"
+    assert extract_youtube_id(url3) == "dQw4w9WgXcQ"
+    assert normalize_youtube_url(url3) == "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+
+    # raw ID
+    assert extract_youtube_id("dQw4w9WgXcQ") == "dQw4w9WgXcQ"
+    assert normalize_youtube_url("dQw4w9WgXcQ") == "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+
+
+def test_provider_format_fallback(monkeypatch, tmp_path):
+    calls = []
+    def fake_get(url, params, timeout):
+        calls.append(params["format"])
+        if params["format"] == "1080":
+            # Simulate 1080 failure
+            return SimpleNamespace(ok=True, status_code=200, json=lambda: {"success": 0, "text": "Cipher/format not available"})
+        # 720 succeeds
+        return SimpleNamespace(ok=True, status_code=200, json=lambda: {"success": 1, "id": "job-720-ok", "info": {"title": "Fallback Video"}})
+
+    monkeypatch.setattr("app.integrations.requests.get", fake_get)
+    provider = DownloadProvider("test-key", download_dir=tmp_path)
+    job_id, title = provider.create_job("https://youtu.be/dQw4w9WgXcQ?si=test", format_id="1080")
+    assert job_id == "job-720-ok"
+    assert title == "Fallback Video"
+    assert calls == ["1080", "720"]
+
+
+def test_provider_login_required_error(monkeypatch, tmp_path):
+    def fake_get(url, params, timeout):
+        return SimpleNamespace(ok=True, status_code=200, json=lambda: {"success": 0, "text": "This content requires login and cannot be downloaded."})
+
+    monkeypatch.setattr("app.integrations.requests.get", fake_get)
+    provider = DownloadProvider("test-key", download_dir=tmp_path)
+    with pytest.raises(IntegrationError) as exc_info:
+        provider.create_job("https://youtu.be/dQw4w9WgXcQ", format_id="1080")
+    assert not exc_info.value.retryable
+    assert "Age-Restricted" in str(exc_info.value)
+    assert "Video-Download API rejected video" in str(exc_info.value)
+
+
+
 
