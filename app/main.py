@@ -271,6 +271,11 @@ def render_page(request: Request, page: str, message: str | None = None, error: 
     )
     standard_jobs = [j for j in all_jobs if j.get("job_type") != "short"]
     shorts_jobs = [j for j in all_jobs if j.get("job_type") == "short"]
+    for j in shorts_jobs:
+        try:
+            j["parsed_opts"] = json.loads(j.get("render_options") or "{}")
+        except Exception:
+            j["parsed_opts"] = {}
 
     user_channel = DB.get_user_oauth(user["id"])
     system_channel_connected = bool(DB.one("SELECT id FROM oauth_tokens WHERE id=1"))
@@ -492,7 +497,15 @@ def reconcile_job(job_id: int, request: Request, decision: str = Form(...), dest
 
 
 @app.post("/shorts/create")
-def create_short_from_url(request: Request, url: str = Form(...), confirm_rights: str | None = Form(None),
+def create_short_from_url(request: Request, url: str = Form(...),
+                          num_clips: int = Form(5),
+                          layout: str = Form("facetrack"),
+                          captions_enabled: str = Form("yes"),
+                          caption_style: str = Form("hormozi_yellow"),
+                          caption_font: str = Form("Montserrat"),
+                          caption_position: str = Form("lower_third"),
+                          skip_intro: str = Form("yes"),
+                          confirm_rights: str | None = Form(None),
                           csrf: str = Form(...), user: dict = Depends(require_shorts_access)):
     assert_csrf(request, csrf)
     if confirm_rights != "yes":
@@ -504,13 +517,24 @@ def create_short_from_url(request: Request, url: str = Form(...), confirm_rights
     short_vid_id = f"{video_id}_short_{int(time.time())}"
     now = int(time.time())
 
+    clips_count = max(5, min(15, int(num_clips)))
+    render_opts = {
+        "num_clips": clips_count,
+        "layout": layout if layout in ("facetrack", "blur", "crop") else "facetrack",
+        "captions_enabled": captions_enabled == "yes",
+        "caption_style": caption_style if caption_style in ("hormozi_yellow", "neon_cyan", "viral_mint", "classic_white", "bold_red") else "hormozi_yellow",
+        "caption_font": caption_font if caption_font in ("Montserrat", "Arial", "Impact", "Roboto", "Trebuchet MS") else "Montserrat",
+        "caption_position": caption_position if caption_position in ("lower_third", "bottom", "center") else "lower_third",
+        "skip_intro": skip_intro == "yes",
+    }
+
     DB.execute(
-        "INSERT INTO jobs(source_channel_id, source_title, video_id, source_url, title, status, approved, job_type, parent_video_id, user_id, created_at, updated_at) "
-        "VALUES(?,?,?,?,?,'queued',1,'short',?,?,?,?)",
-        ("manual_short", "AI Shorts Studio", short_vid_id, clean_url, f"Short from {video_id}", video_id, user.get("id"), now, now)
+        "INSERT INTO jobs(source_channel_id, source_title, video_id, source_url, title, status, approved, job_type, parent_video_id, user_id, render_options, created_at, updated_at) "
+        "VALUES(?,?,?,?,?,'queued',1,'short',?,?,?,?,?)",
+        ("manual_short", "AI Shorts Studio", short_vid_id, clean_url, f"Shorts Batch from {video_id}", video_id, user.get("id"), json.dumps(render_opts), now, now)
     )
-    DB.event(f"New Short job enqueued by {user['username']} for {clean_url}")
-    return RedirectResponse("/shorts?message=Video%20queued%20for%20AI%20Short%20generation", status_code=303)
+    DB.event(f"New Short job ({clips_count} clips, {layout}) enqueued by {user['username']} for {clean_url}")
+    return RedirectResponse(f"/shorts?message=Video%20queued%20for%20AI%20Shorts%20generation%20({clips_count}%20clips)", status_code=303)
 
 
 @app.post("/jobs/{job_id}/repurpose")
@@ -522,14 +546,23 @@ def repurpose_job(job_id: int, request: Request, csrf: str = Form(...), user: di
 
     now = int(time.time())
     short_vid_id = f"{job['video_id']}_short_{int(time.time())}"
+    render_opts = {
+        "num_clips": 5,
+        "layout": "facetrack",
+        "captions_enabled": True,
+        "caption_style": "hormozi_yellow",
+        "caption_font": "Montserrat",
+        "caption_position": "lower_third",
+        "skip_intro": True,
+    }
     DB.execute(
-        "INSERT INTO jobs(source_id, source_channel_id, source_title, video_id, source_url, title, status, approved, job_type, parent_video_id, user_id, created_at, updated_at) "
-        "VALUES(?,?,?,?,?,'queued',1,'short',?,?,?,?)",
+        "INSERT INTO jobs(source_id, source_channel_id, source_title, video_id, source_url, title, status, approved, job_type, parent_video_id, user_id, render_options, created_at, updated_at) "
+        "VALUES(?,?,?,?,?,'queued',1,'short',?,?,?,?,?)",
         (job.get("source_id"), job.get("source_channel_id"), job.get("source_title", ""),
-         short_vid_id, job["source_url"], f"[Short] {job['title']}", job["video_id"], user.get("id"), now, now)
+         short_vid_id, job["source_url"], f"[Short] {job['title']}", job["video_id"], user.get("id"), json.dumps(render_opts), now, now)
     )
-    DB.event(f"Job {job_id} repurposed to Short by {user['username']}")
-    return RedirectResponse("/shorts?message=Video%20queued%20for%20Shorts%20repurposing", status_code=303)
+    DB.event(f"Job {job_id} repurposed to Shorts batch (5 clips) by {user['username']}")
+    return RedirectResponse("/shorts?message=Video%20queued%20for%20Shorts%20repurposing%20(5%20clips)", status_code=303)
 
 
 @app.post("/users/create")

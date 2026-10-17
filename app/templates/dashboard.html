@@ -374,8 +374,8 @@
       <section class="panel hero-shorts-panel">
         <div class="panel-head">
           <div>
-            <h2>Generate Short from YouTube URL</h2>
-            <p class="muted-text">3-part split transcript analysis · Deepgram Nova-2 · Groq Llama 3.3 · Zero-crash 1 GB VPS render</p>
+            <h2>Generate Shorts from YouTube URL</h2>
+            <p class="muted-text">2-Stage Discovery & Review Prompts · Smart Face Tracking (9:16) · Kinetic Captions · Minimum 5 Clips</p>
           </div>
         </div>
         <form method="post" action="/shorts/create" class="form-grid">
@@ -384,6 +384,76 @@
             YouTube Video URL
             <input name="url" placeholder="https://www.youtube.com/watch?v=... or https://youtu.be/..." required>
           </label>
+
+          <label>
+            Number of Clips to Generate
+            <select name="num_clips">
+              <option value="5" selected>5 Clips (Standard High-Virality Set - Guaranteed)</option>
+              <option value="6">6 Clips</option>
+              <option value="8">8 Clips</option>
+              <option value="10">10 Clips</option>
+              <option value="12">12 Clips</option>
+            </select>
+            <small class="help">AI editorial pipeline isolates at least this number of high-retention cuts.</small>
+          </label>
+
+          <label>
+            Framing / Layout
+            <select name="layout">
+              <option value="facetrack" selected>Smart Face Tracking 9:16 (Recommended)</option>
+              <option value="blur">Blurred Background Stack (16:9 on 9:16)</option>
+              <option value="crop">Center Crop 9:16</option>
+            </select>
+            <small class="help">Smooth speaker-centered reframing without camera jitter.</small>
+          </label>
+
+          <label>
+            Burn-in Captions
+            <select name="captions_enabled">
+              <option value="yes" selected>Enabled (Kinetic Word-Pop Subtitles)</option>
+              <option value="no">Disabled (Clean Video Without Text)</option>
+            </select>
+            <small class="help">Dynamic on-screen animated subtitles.</small>
+          </label>
+
+          <label>
+            Caption Preset & Palette
+            <select name="caption_style">
+              <option value="hormozi_yellow" selected>Hormozi Electric Yellow (Active Pop)</option>
+              <option value="neon_cyan">Cyber Neon Cyan (Active Pop)</option>
+              <option value="viral_mint">Viral Mint Green (Active Pop)</option>
+              <option value="classic_white">Classic White (Heavy Black Outline)</option>
+              <option value="bold_red">Bold Vivid Red (High Punch)</option>
+            </select>
+            <small class="help">Highlight color and kinetic animation theme.</small>
+          </label>
+
+          <label>
+            Subtitle Typography
+            <select name="caption_font">
+              <option value="Montserrat" selected>Montserrat (Modern Bold)</option>
+              <option value="Arial">Arial (Clean Sans)</option>
+              <option value="Impact">Impact (Heavy Viral Punch)</option>
+              <option value="Trebuchet MS">Trebuchet MS</option>
+            </select>
+            <small class="help">Font family rendered onto video canvas.</small>
+          </label>
+
+          <label>
+            Caption Safe-Zone Position
+            <select name="caption_position">
+              <option value="lower_third" selected>Lower Third (Shorts Overlay Safe Zone)</option>
+              <option value="center">Center Screen</option>
+              <option value="bottom">Bottom Margin</option>
+            </select>
+            <small class="help">Vertical placement to avoid YouTube UI elements.</small>
+          </label>
+
+          <label class="checkline wide">
+            <input type="checkbox" name="skip_intro" value="yes" checked>
+            <span><strong>Skip Podcast Intro & Chit-Chat</strong>: Automatically detects and excludes opening theme music, sponsor reads, and host pleasantries to extract only substantive talk.</span>
+          </label>
+
           <label class="checkline wide">
             <input type="checkbox" name="confirm_rights" value="yes" required>
             <span>I own this content or have documented permission to repurpose and publish this video as a Short.</span>
@@ -391,9 +461,9 @@
           <div class="wide">
             <button class="button primary" type="submit">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
-              Analyze & Generate 9:16 Short
+              Analyze & Generate 9:16 Shorts
             </button>
-            <span class="help inline-help">AI isolates the most viral 30–58s section, applies kinetic word-pop subtitles, and queues it for your approval.</span>
+            <span class="help inline-help">AI executes 2-stage Discovery & Review pipeline, applies face-tracking 9:16 reframing, kinetic subtitles, and queues all clips for individual review.</span>
           </div>
         </form>
       </section>
@@ -478,6 +548,21 @@
                               <span>{{ job.hook_summary }}</span>
                             </div>
                           {% endif %}
+                          {% if job.parsed_opts and job.parsed_opts.get('review') %}
+                            {% set rev = job.parsed_opts.review %}
+                            <div class="score-pills-row" style="margin-top: 5px; display: flex; flex-wrap: wrap; gap: 4px; font-size: 11px;">
+                              <span class="mono-badge" style="background: rgba(16,185,129,0.12); color: #34d399;" title="Opening Hook Strength">Hook: <b>{{ rev.hookStrength }}/100</b></span>
+                              <span class="mono-badge" style="background: rgba(59,130,246,0.12); color: #60a5fa;" title="Middle Engagement">Eng: <b>{{ rev.engagement }}/100</b></span>
+                              <span class="mono-badge" style="background: rgba(245,158,11,0.12); color: #fbbf24;" title="Payoff & Resolution">Payoff: <b>{{ rev.payoff }}/100</b></span>
+                              <span class="mono-badge" style="background: rgba(168,85,247,0.12); color: #c084fc;" title="Standalone Clarity">Clarity: <b>{{ rev.standaloneClarity }}/100</b></span>
+                              <span class="mono-badge" style="background: rgba(236,72,153,0.12); color: #f472b6;" title="Specificity">Spec: <b>{{ rev.specificity }}/100</b></span>
+                            </div>
+                            {% if rev.hookEvidence %}
+                              <div style="font-size: 11px; color: var(--muted); margin-top: 4px;">
+                                Hook quote: <em>“{{ rev.hookEvidence }}”</em>
+                              </div>
+                            {% endif %}
+                          {% endif %}
                           {% if job.youtube_id %}
                             <div class="destination-row">
                               <a class="dest-link" target="_blank" rel="noopener noreferrer" href="https://youtu.be/{{ job.youtube_id }}">
@@ -494,8 +579,13 @@
                         <span class="mono-badge">
                           <code>{{ job.clip_start }}s → {{ job.clip_end }}s ({{ (job.clip_end - job.clip_start)|round(1) }}s)</code>
                         </span>
+                        <div style="margin-top: 4px; font-size: 11px; color: var(--muted);">
+                          <span title="Framing layout">📐 {{ (job.parsed_opts.layout if job.parsed_opts else 'facetrack')|replace('_',' ')|title }}</span>
+                          ·
+                          <span title="Captions">{{ '💬 Captions ON' if (not job.parsed_opts or job.parsed_opts.get('captions_enabled', True)) else '🚫 No Captions' }}</span>
+                        </div>
                       {% else %}
-                        <span class="cell-sub">AI analyzing audio...</span>
+                        <span class="cell-sub">AI analyzing audio & discovery...</span>
                       {% endif %}
                     </td>
                     <td>

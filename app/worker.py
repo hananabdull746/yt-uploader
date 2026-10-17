@@ -275,8 +275,25 @@ class Worker:
             clip_start = job.get("clip_start")
             clip_end = job.get("clip_end")
             words: list[dict[str, Any]] = []
+            child_jobs: list[tuple[int, dict[str, Any]]] = []
 
-            # 1. AI Hook Detection Phase (Deepgram + Groq / Gemini 3-part split)
+            # Parse job render options
+            opts: dict[str, Any] = {}
+            if job.get("render_options"):
+                try:
+                    opts = json.loads(job["render_options"])
+                except Exception:
+                    opts = {}
+
+            target_count = max(5, int(opts.get("num_clips", 5)))
+            skip_intro = bool(opts.get("skip_intro", True))
+            layout = opts.get("layout") or self.db.get_setting("shorts_layout")[0] or "facetrack"
+            captions_enabled = opts.get("captions_enabled", True)
+            caption_style = opts.get("caption_style") or self.db.get_setting("shorts_caption_style")[0] or "hormozi_yellow"
+            font = opts.get("caption_font") or self.db.get_setting("shorts_font")[0] or "Montserrat"
+            caption_position = opts.get("caption_position") or "lower_third"
+
+            # 1. AI Hook Detection Phase (Deepgram + 2-Stage Discovery & Review Pipeline)
             if clip_start is None or clip_end is None:
                 self.db.execute("UPDATE jobs SET stage='analyzing_audio',progress=10,updated_at=? WHERE id=?",
                                 (int(time.time()), job_id))
@@ -307,62 +324,105 @@ class Worker:
 
                     self.db.execute("UPDATE jobs SET stage='detecting_hooks',progress=35,updated_at=? WHERE id=?",
                                     (int(time.time()), job_id))
-                    self.db.event(f"Transcribed {len(words)} words. Analyzing 3-part segments for viral hooks", job_id=job_id)
+                    self.db.event(f"Transcribed {len(words)} words. Executing 2-Stage Editorial Discovery & Review (min {target_count} clips)", job_id=job_id)
 
                     detector = ViralHookDetector(groq_key=groq_key, gemini_key=gemini_key, timeout=settings.request_timeout)
-                    best_clip = detector.detect_best_short(words, total_dur, job.get("title", ""))
+                    all_clips = detector.detect_clips(words, total_dur, job.get("title", ""), target_count=target_count, skip_intro=skip_intro)
 
-                    clip_start = best_clip["start"]
-                    clip_end = best_clip["end"]
-                    new_title = best_clip["title"]
-                    new_desc = best_clip["description"]
-                    hook_summary = f"{best_clip['hook_reason']} (Score: {best_clip['virality_score']}/100)"
+                    primary_clip = all_clips[0]
+                    clip_start = primary_clip["start"]
+                    clip_end = primary_clip["end"]
+                    new_title = primary_clip["title"]
+                    new_desc = primary_clip["description"]
+                    hook_summary = primary_clip.get("hook_summary", "")
+                    opts["review"] = primary_clip.get("review", {})
 
                     self.db.execute(
-                        "UPDATE jobs SET clip_start=?,clip_end=?,title=?,description=?,hook_summary=?,updated_at=? WHERE id=?",
-                        (clip_start, clip_end, new_title, new_desc, hook_summary, int(time.time()), job_id)
+                        "UPDATE jobs SET clip_start=?,clip_end=?,title=?,description=?,hook_summary=?,render_options=?,updated_at=? WHERE id=?",
+                        (clip_start, clip_end, new_title, new_desc, hook_summary, json.dumps(opts), int(time.time()), job_id)
                     )
-                    self.db.event(f"Selected viral Short hook: {clip_start:.1f}s -> {clip_end:.1f}s: {new_title}", job_id=job_id)
+                    self.db.event(f"Selected Primary Short #{job_id}: {clip_start:.1f}s -> {clip_end:.1f}s: {new_title}", job_id=job_id)
+
+                    # Create sibling jobs for clips 2..N
+                    now = int(time.time())
+                    for idx, child in enumerate(all_clips[1:], start=2):
+                        child_vid_id = f"{job['video_id']}_c{idx}_{now}"
+                        child_opts = dict(opts)
+                        child_opts["review"] = child.get("review", {})
+                        child_job_id = self.db.execute(
+                            "INSERT INTO jobs(source_channel_id, source_title, video_id, source_url, title, description, hook_summary, status, approved, job_type, clip_start, clip_end, parent_video_id, user_id, render_options, created_at, updated_at) "
+                            "VALUES(?,?,?,?,?,?,?,'queued',1,'short',?,?,?,?,?,?,?)",
+                            (job.get("source_channel_id", "manual_short"), job.get("source_title", "AI Shorts Studio"),
+                             child_vid_id, job["source_url"], child["title"], child["description"], child.get("hook_summary", ""),
+                             child["start"], child["end"], job.get("parent_video_id") or job["video_id"], job.get("user_id"),
+                             json.dumps(child_opts), now, now)
+                        )
+                        child_jobs.append((child_job_id, child))
+                        self.db.event(f"Queued Sibling Short #{child_job_id} ({child['start']:.1f}s -> {child['end']:.1f}s): {child['title']}")
                 finally:
                     audio_path.unlink(missing_ok=True)
 
-            # 2. 9:16 Video Rendering Phase with Kinetic Subtitles
-            self.db.execute("UPDATE jobs SET stage='rendering_short',progress=50,updated_at=? WHERE id=?",
-                            (int(time.time()), job_id))
-            self.db.event(f"Downloading source video and rendering 9:16 vertical Short ({clip_start:.1f}s -> {clip_end:.1f}s)", job_id=job_id)
+            # 2. 9:16 Video Rendering Phase with Face Tracking & Kinetic Subtitles
+            short_output_path = None
+            if job.get("media_path") and Path(job["media_path"]).is_file():
+                # Already rendered from a batch run
+                short_output_path = Path(job["media_path"])
+            else:
+                self.db.execute("UPDATE jobs SET stage='rendering_short',progress=50,updated_at=? WHERE id=?",
+                                (int(time.time()), job_id))
+                self.db.event(f"Downloading source video and rendering 9:16 vertical Short ({clip_start:.1f}s -> {clip_end:.1f}s)", job_id=job_id)
 
-            api_key = self._secret_setting("download_api_key")
-            provider = DownloadProvider(api_key, settings.request_timeout, int(self.db.get_setting("max_download_bytes")[0] or settings.max_download_bytes), settings.downloads_path)
+                api_key = self._secret_setting("download_api_key")
+                provider = DownloadProvider(api_key, settings.request_timeout, int(self.db.get_setting("max_download_bytes")[0] or settings.max_download_bytes), settings.downloads_path)
 
-            video_job_id, _ = provider.create_job(job["source_url"], format_id="1080")
-            raw_video = provider.wait_and_download(video_job_id, job_id,
-                                                  progress=lambda p: self._update_progress(job_id, 50 + int(p * 0.2), "rendering_short"))
+                video_job_id, _ = provider.create_job(job["source_url"], format_id="1080")
+                raw_video = provider.wait_and_download(video_job_id, job_id,
+                                                      progress=lambda p: self._update_progress(job_id, 50 + int(p * 0.2), "rendering_short"))
 
-            short_output_path = Path(settings.downloads_path) / f"short_{job_id}_{int(time.time())}.mp4"
-            ass_path = Path(settings.downloads_path) / f"sub_{job_id}_{int(time.time())}.ass"
+                short_output_path = Path(settings.downloads_path) / f"short_{job_id}_{int(time.time())}.mp4"
+                ass_path = Path(settings.downloads_path) / f"sub_{job_id}_{int(time.time())}.ass"
 
-            try:
-                layout = self.db.get_setting("shorts_layout")[0] or "blur"
-                font = self.db.get_setting("shorts_font")[0] or "Montserrat"
-                caption_style = self.db.get_setting("shorts_caption_style")[0] or "hormozi_yellow"
+                try:
+                    subtitles_file = None
+                    if captions_enabled and words:
+                        subtitles_file = KineticSubtitleGenerator.generate_ass(
+                            words, clip_start, clip_end, ass_path, font_name=font, style_name=caption_style, position=caption_position
+                        )
 
-                subtitles_file = None
-                if words:
-                    subtitles_file = KineticSubtitleGenerator.generate_ass(
-                        words, clip_start, clip_end, ass_path, font_name=font, style_name=caption_style
+                    VideoEngine.render_short_clip(
+                        input_video=raw_video,
+                        output_path=short_output_path,
+                        start_seconds=clip_start,
+                        end_seconds=clip_end,
+                        layout=layout,
+                        subtitles_ass_path=subtitles_file
                     )
 
-                VideoEngine.render_short_clip(
-                    input_video=raw_video,
-                    output_path=short_output_path,
-                    start_seconds=clip_start,
-                    end_seconds=clip_end,
-                    layout=layout,
-                    subtitles_ass_path=subtitles_file
-                )
-            finally:
-                raw_video.unlink(missing_ok=True)
-                ass_path.unlink(missing_ok=True)
+                    # Also render any sibling clips generated in this batch to avoid redownloading video!
+                    for c_id, c_data in child_jobs:
+                        c_output_path = Path(settings.downloads_path) / f"short_{c_id}_{int(time.time())}.mp4"
+                        c_ass_path = Path(settings.downloads_path) / f"sub_{c_id}_{int(time.time())}.ass"
+                        c_sub_file = None
+                        try:
+                            if captions_enabled and words:
+                                c_sub_file = KineticSubtitleGenerator.generate_ass(
+                                    words, c_data["start"], c_data["end"], c_ass_path, font_name=font, style_name=caption_style, position=caption_position
+                                )
+                            VideoEngine.render_short_clip(
+                                input_video=raw_video,
+                                output_path=c_output_path,
+                                start_seconds=c_data["start"],
+                                end_seconds=c_data["end"],
+                                layout=layout,
+                                subtitles_ass_path=c_sub_file
+                            )
+                            self.db.execute("UPDATE jobs SET media_path=?,stage='rendered',progress=65,updated_at=? WHERE id=?",
+                                            (str(c_output_path), int(time.time()), c_id))
+                        finally:
+                            c_ass_path.unlink(missing_ok=True)
+                finally:
+                    raw_video.unlink(missing_ok=True)
+                    ass_path.unlink(missing_ok=True)
 
             self.db.execute("UPDATE jobs SET media_path=?,updated_at=? WHERE id=?",
                             (str(short_output_path), int(time.time()), job_id))

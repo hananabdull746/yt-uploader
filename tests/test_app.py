@@ -441,12 +441,12 @@ def test_database_initialization_includes_thumbnail_path(tmp_path):
 
 
 def test_users_table_and_rbac(tmp_path):
-    from app.security import verify_password
+    from app.security import hash_password, verify_password
     db = Database(tmp_path / "test_users.db")
     db.initialize()
 
     # Create users with different roles
-    user_id = db.create_user("creator_user", "SecretPass123!", role="shorts_only")
+    user_id = db.create_user("creator_user", hash_password("SecretPass123!"), role="shorts_only")
     assert user_id > 0
 
     user = db.get_user_by_username("creator_user")
@@ -461,7 +461,7 @@ def test_users_table_and_rbac(tmp_path):
     assert user_updated["role"] == "both"
 
     # Update password
-    db.update_user_password(user_id, "NewSecret456!")
+    db.update_user_password(user_id, hash_password("NewSecret456!"))
     user_pw_updated = db.get_user_by_id(user_id)
     assert verify_password("NewSecret456!", user_pw_updated["password_hash"])
 
@@ -640,5 +640,149 @@ def test_worker_routes_to_user_specific_channel(monkeypatch, tmp_path):
     job_system = {"id": 2, "user_id": None, "title": "System Video"}
     uploader_sys = worker._get_uploader_for_job(job_system)
     assert uploader_sys.credentials.refresh_token == "sys-ref"
+
+
+def test_discovery_and_review_prompt_contract():
+    from app.ai_shorts import DISCOVERY_PROMPT_TEMPLATE, REVIEW_PROMPT_TEMPLATE
+    # Verify Discovery prompt placeholders
+    assert "{{searchBudget}}" in DISCOVERY_PROMPT_TEMPLATE
+    assert "{{targetCount}}" in DISCOVERY_PROMPT_TEMPLATE
+    assert "{{minDuration}}" in DISCOVERY_PROMPT_TEMPLATE
+    assert "{{maxDuration}}" in DISCOVERY_PROMPT_TEMPLATE
+    assert "{{targetDuration}}" in DISCOVERY_PROMPT_TEMPLATE
+    assert "{{excludedRangesInstruction}}" in DISCOVERY_PROMPT_TEMPLATE
+
+    # Verify Review prompt 5 dimensions & evidence fields
+    assert "hookStrength" in REVIEW_PROMPT_TEMPLATE
+    assert "engagement" in REVIEW_PROMPT_TEMPLATE
+    assert "standaloneClarity" in REVIEW_PROMPT_TEMPLATE
+    assert "payoff" in REVIEW_PROMPT_TEMPLATE
+    assert "specificity" in REVIEW_PROMPT_TEMPLATE
+    assert "hookEvidence" in REVIEW_PROMPT_TEMPLATE
+    assert "payoffEvidence" in REVIEW_PROMPT_TEMPLATE
+    assert "problems" in REVIEW_PROMPT_TEMPLATE
+
+
+def test_podcast_intro_detection_logic():
+    from app.ai_shorts import ViralHookDetector
+
+    intro_words = [
+        {"word": "Welcome", "start": 0.5, "end": 1.0},
+        {"word": "back", "start": 1.1, "end": 1.4},
+        {"word": "to", "start": 1.5, "end": 1.7},
+        {"word": "the", "start": 1.8, "end": 1.9},
+        {"word": "show.", "start": 2.0, "end": 2.5},
+        {"word": "Today's", "start": 2.8, "end": 3.2},
+        {"word": "sponsor", "start": 3.3, "end": 3.9},
+        {"word": "is", "start": 4.0, "end": 4.1},
+        {"word": "SuperProduct.", "start": 4.2, "end": 5.0},
+        {"word": "Use", "start": 5.2, "end": 5.5},
+        {"word": "promo", "start": 5.6, "end": 6.0},
+        {"word": "code", "start": 6.1, "end": 6.4},
+        {"word": "SAVE20.", "start": 6.5, "end": 7.0},
+        {"word": "Now", "start": 45.0, "end": 45.4},
+        {"word": "let's", "start": 45.5, "end": 45.8},
+        {"word": "talk", "start": 45.9, "end": 46.2},
+        {"word": "about", "start": 46.3, "end": 46.5},
+        {"word": "quantum", "start": 46.6, "end": 47.0},
+        {"word": "computing.", "start": 47.1, "end": 48.0},
+    ]
+
+    intro_end = ViralHookDetector.detect_podcast_intro_end(intro_words, total_duration=300.0)
+    assert intro_end >= 35.0
+
+    # Clean words with no intro keywords in short clip
+    clean_words = [
+        {"word": "The", "start": 0.5, "end": 0.9},
+        {"word": "secret", "start": 1.0, "end": 1.5},
+        {"word": "to", "start": 1.6, "end": 1.8},
+        {"word": "building", "start": 1.9, "end": 2.4},
+        {"word": "great", "start": 2.5, "end": 2.9},
+        {"word": "software", "start": 3.0, "end": 3.6},
+        {"word": "is", "start": 3.7, "end": 3.9},
+        {"word": "discipline.", "start": 4.0, "end": 4.7},
+    ]
+    assert ViralHookDetector.detect_podcast_intro_end(clean_words, total_duration=45.0) == 0.0
+
+
+def test_viral_hook_detector_multi_clip_guarantees_minimum_five(monkeypatch):
+    from app.ai_shorts import ViralHookDetector
+
+    words = []
+    # Generate 5 minutes of dummy timestamped speech
+    for sec in range(0, 300, 2):
+        words.append({
+            "word": f"word_{sec}",
+            "start": float(sec),
+            "end": float(sec + 1.5),
+        })
+
+    detector = ViralHookDetector(groq_key="mock", gemini_key="mock")
+
+    # Mock discovery to return candidate cuts
+    def mock_llm(prompt):
+        if "You are an editor finding compelling" in prompt:
+            return {
+                "clips": [
+                    {"id": "cut_1", "start_seconds": 35.0, "end_seconds": 75.0, "title": "Clip 1 #Shorts", "description": "Desc 1", "hookText": "Opening hook 1", "concludingText": "Ending text 1"},
+                    {"id": "cut_2", "start_seconds": 90.0, "end_seconds": 130.0, "title": "Clip 2 #Shorts", "description": "Desc 2", "hookText": "Opening hook 2", "concludingText": "Ending text 2"},
+                ]
+            }
+        elif "You are a skeptical editor" in prompt:
+            return {
+                "reviews": [
+                    {"id": "cut_1", "hookStrength": 88, "engagement": 85, "standaloneClarity": 90, "payoff": 85, "specificity": 82, "problems": [], "hookEvidence": "Opening hook 1", "payoffEvidence": "Ending text 1", "reason": "Exceptional moment"},
+                    {"id": "cut_2", "hookStrength": 78, "engagement": 75, "standaloneClarity": 80, "payoff": 80, "specificity": 75, "problems": [], "hookEvidence": "Opening hook 2", "payoffEvidence": "Ending text 2", "reason": "Solid insight"},
+                ]
+            }
+        return {}
+
+    monkeypatch.setattr(detector, "_call_llm", mock_llm)
+
+    clips = detector.detect_clips(words, total_duration=300.0, video_title="Full Podcast", target_count=5, skip_intro=True)
+    assert len(clips) >= 5
+    # Verify all clips have necessary fields
+    for c in clips:
+        assert c["start"] >= 0.0
+        assert c["end"] > c["start"]
+        assert c["duration"] >= 20.0
+        assert c["title"].endswith("#Shorts")
+        assert "virality_score" in c
+
+
+def test_kinetic_subtitle_generator_styles_and_positions(tmp_path):
+    from app.ai_shorts import KineticSubtitleGenerator
+
+    words = [
+        {"word": "Unbelievable", "start": 1.0, "end": 1.6},
+        {"word": "results", "start": 1.7, "end": 2.2},
+        {"word": "happened", "start": 2.3, "end": 2.8},
+        {"word": "today.", "start": 2.9, "end": 3.5},
+    ]
+
+    for style in ("hormozi_yellow", "neon_cyan", "viral_mint", "classic_white", "bold_red"):
+        for pos in ("lower_third", "center", "bottom"):
+            sub_file = tmp_path / f"sub_{style}_{pos}.ass"
+            generated = KineticSubtitleGenerator.generate_ass(
+                words=words, clip_start=0.0, clip_end=5.0,
+                output_path=sub_file, font_name="Montserrat",
+                style_name=style, position=pos
+            )
+            assert generated.is_file()
+            content = generated.read_text(encoding="utf-8")
+            assert "[Script Info]" in content
+            assert "[V4+ Styles]" in content
+            assert "[Events]" in content
+            assert "UNBELIEVABLE" in content
+
+
+def test_video_engine_face_tracking_resilience(tmp_path):
+    from app.video_engine import VideoEngine
+
+    # Test on a dummy path (should not crash, gracefully returns 0.5 center ratio)
+    dummy_video = tmp_path / "non_existent.mp4"
+    ratio = VideoEngine.detect_face_center_ratio(dummy_video, start_seconds=0.0, duration=10.0)
+    assert ratio == 0.5
+
 
 

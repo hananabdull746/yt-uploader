@@ -62,6 +62,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   parent_video_id TEXT,
   hook_summary TEXT,
   user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  render_options TEXT DEFAULT '{}',
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
@@ -130,7 +131,8 @@ class Database:
                                           ("clip_end", "REAL"),
                                           ("parent_video_id", "TEXT"),
                                           ("hook_summary", "TEXT"),
-                                          ("user_id", "INTEGER REFERENCES users(id) ON DELETE SET NULL")):
+                                          ("user_id", "INTEGER REFERENCES users(id) ON DELETE SET NULL"),
+                                          ("render_options", "TEXT DEFAULT '{}'")):
                     if name not in columns:
                         conn.execute(f"ALTER TABLE jobs ADD COLUMN {name} {declaration}")
             
@@ -247,8 +249,8 @@ class Database:
         return self.execute("INSERT INTO users(username, password_hash, role, created_at, updated_at) VALUES(?,?,?,?,?)",
                             (username.strip(), password_hash, role, now, now))
 
-    def delete_user(self, user_id: int) -> None:
-        self.execute("DELETE FROM users WHERE id=?", (user_id,))
+    def delete_user(self, user_id: int) -> bool:
+        return bool(self.execute("DELETE FROM users WHERE id=?", (user_id,)))
 
     def update_user_password(self, user_id: int, password_hash: str) -> None:
         now = int(time.time())
