@@ -29,23 +29,33 @@ class DeepgramClient:
             "Content-Type": "audio/mp3",
         }
         params = {
-            "model": "nova-2",
             "smart_format": "true",
             "punctuate": "true",
             "utterances": "true",
         }
 
-        try:
-            with open(path, "rb") as f:
-                response = requests.post(
-                    self.base_url,
-                    headers=headers,
-                    params=params,
-                    data=f,
-                    timeout=self.timeout,
-                )
-        except requests.RequestException as exc:
-            raise IntegrationError(f"Deepgram transcription request failed: {exc}", retryable=True) from exc
+        # Try Nova-3 (Deepgram's flagship model), with automatic fallback to Nova-2
+        response = None
+        for model_name in ("nova-3", "nova-2"):
+            params["model"] = model_name
+            try:
+                with open(path, "rb") as f:
+                    response = requests.post(
+                        self.base_url,
+                        headers=headers,
+                        params=params,
+                        data=f,
+                        timeout=self.timeout,
+                    )
+            except requests.RequestException as exc:
+                raise IntegrationError(f"Deepgram transcription request failed: {exc}", retryable=True) from exc
+
+            if response.status_code == 400 and model_name == "nova-3":
+                continue
+            break
+
+        if response is None:
+            raise IntegrationError("Deepgram transcription failed to initialize request")
 
         if response.status_code == 429:
             raise IntegrationError("Deepgram rate limit reached. Retry in a few minutes.", retryable=True)
@@ -525,48 +535,86 @@ class ViralHookDetector:
             "Authorization": f"Bearer {self.groq_key}",
             "Content-Type": "application/json",
         }
-        payload = {
-            "model": "llama-3.3-70b-versatile",
-            "messages": [
-                {"role": "system", "content": "You are a professional video hook analyzer and skeptical editor that returns ONLY strict JSON."},
-                {"role": "user", "content": prompt},
-            ],
-            "response_format": {"type": "json_object"},
-            "temperature": 0.25,
-            "max_tokens": 1200,
-        }
-        resp = requests.post(url, headers=headers, json=payload, timeout=self.timeout)
-        if resp.status_code == 429:
-            raise IntegrationError("Groq TPM rate limit reached, falling back to Gemini", retryable=True)
-        if not resp.ok:
-            raise IntegrationError(f"Groq API returned HTTP {resp.status_code}: {resp.text[:200]}")
+        # Try flagship Llama 3.3 70B Versatile, fallback to Llama 3.1 8B Instant if rate limit hit
+        last_resp = None
+        for model_name in ("llama-3.3-70b-versatile", "llama-3.1-8b-instant"):
+            payload = {
+                "model": model_name,
+                "messages": [
+                    {"role": "system", "content": "You are a professional video hook analyzer and skeptical editor that returns ONLY strict JSON."},
+                    {"role": "user", "content": prompt},
+                ],
+                "response_format": {"type": "json_object"},
+                "temperature": 0.25,
+                "max_tokens": 1200,
+            }
+            try:
+                resp = requests.post(url, headers=headers, json=payload, timeout=self.timeout)
+            except requests.RequestException as exc:
+                if model_name == "llama-3.3-70b-versatile":
+                    continue
+                raise IntegrationError(f"Groq API request failed: {exc}", retryable=True) from exc
 
-        data = resp.json()
-        content = data["choices"][0]["message"]["content"]
-        return json.loads(content)
+            last_resp = resp
+            if resp.status_code == 429 and model_name == "llama-3.3-70b-versatile":
+                continue
+            if not resp.ok:
+                if model_name == "llama-3.3-70b-versatile":
+                    continue
+                raise IntegrationError(f"Groq API returned HTTP {resp.status_code}: {resp.text[:200]}")
+
+            data = resp.json()
+            content = data["choices"][0]["message"]["content"]
+            return json.loads(content)
+
+        if last_resp and last_resp.status_code == 429:
+            raise IntegrationError("Groq TPM rate limit reached, falling back to Gemini", retryable=True)
+        raise IntegrationError(f"Groq API returned HTTP {last_resp.status_code if last_resp else 'unknown'}")
 
     def _call_gemini(self, prompt: str) -> dict[str, Any]:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={self.gemini_key}"
-        headers = {"Content-Type": "application/json"}
-        payload = {
-            "contents": [{
-                "parts": [{"text": prompt}]
-            }],
-            "generationConfig": {
-                "temperature": 0.25,
-                "response_mime_type": "application/json",
+        # Try Gemini 2.0 Flash (latest 2026 production flagship), fallback to Gemini 1.5 Flash
+        last_resp = None
+        for model_name in ("gemini-2.0-flash", "gemini-1.5-flash"):
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={self.gemini_key}"
+            headers = {"Content-Type": "application/json"}
+            payload = {
+                "contents": [{
+                    "role": "user",
+                    "parts": [{"text": prompt}]
+                }],
+                "generationConfig": {
+                    "temperature": 0.25,
+                    "response_mime_type": "application/json",
+                }
             }
-        }
-        resp = requests.post(url, headers=headers, json=payload, timeout=self.timeout)
-        if not resp.ok:
-            raise IntegrationError(f"Gemini API returned HTTP {resp.status_code}: {resp.text[:200]}")
+            try:
+                resp = requests.post(url, headers=headers, json=payload, timeout=self.timeout)
+            except requests.RequestException as exc:
+                if model_name == "gemini-2.0-flash":
+                    continue
+                raise IntegrationError(f"Gemini API request failed: {exc}", retryable=True) from exc
 
-        data = resp.json()
-        candidates = data.get("candidates") or []
-        if not candidates:
-            raise IntegrationError("Gemini returned empty candidate response")
-        text = candidates[0]["content"]["parts"][0]["text"]
-        return json.loads(text)
+            last_resp = resp
+            if resp.status_code in (404, 429) and model_name == "gemini-2.0-flash":
+                continue
+            if not resp.ok:
+                if model_name == "gemini-2.0-flash":
+                    continue
+                raise IntegrationError(f"Gemini API returned HTTP {resp.status_code}: {resp.text[:200]}")
+
+            data = resp.json()
+            candidates = data.get("candidates") or []
+            if not candidates:
+                if model_name == "gemini-2.0-flash":
+                    continue
+                raise IntegrationError("Gemini returned empty candidate response")
+
+            content_obj = candidates[0].get("content") or {}
+            parts = content_obj.get("parts") or [{}]
+            text = parts[0].get("text", "")
+            return json.loads(text)
+
+        raise IntegrationError(f"Gemini API failed with status {last_resp.status_code if last_resp else 'unknown'}")
 
 
 class KineticSubtitleGenerator:
